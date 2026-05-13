@@ -1,0 +1,8 @@
+{
+  "setupScript": "npm install",
+  "devScript": "PORT=${DEV3_PORT0:-3583} npm run dev",
+  "clonePaths": ["node_modules"],
+  "defaultBaseBranch": "main",
+  "defaultCompareRefMode": "remote",
+  "portCount": 1
+}

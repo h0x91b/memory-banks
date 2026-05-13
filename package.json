@@ -1,0 +1,21 @@
+{
+  "name": "memory-banks-flue-agent",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "./scripts/flue-run.sh dev --target node --env .env --port ${PORT:-3583}",
+    "hello": "./scripts/flue-run.sh run hello --target node --id test-1 --env .env --payload",
+    "build": "flue build --target node",
+    "start": "node dist/server.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@flue/sdk": "latest",
+    "valibot": "latest"
+  },
+  "devDependencies": {
+    "@flue/cli": "latest",
+    "typescript": "^5.6.0"
+  }
+}
