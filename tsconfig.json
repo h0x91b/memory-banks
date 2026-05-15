@@ -6,6 +6,6 @@
     "strict": true,
     "skipLibCheck": true
   },
-  "include": ["agents/**/*.ts", ".flue/**/*.ts"],
+  "include": ["agents/**/*.ts", ".flue/**/*.ts", "src/**/*.ts"],
   "exclude": ["dist", "node_modules"]
 }

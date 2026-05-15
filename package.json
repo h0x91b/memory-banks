@@ -5,13 +5,15 @@
   "type": "module",
   "scripts": {
     "dev": "./scripts/flue-run.sh dev --target node --env .env --port ${PORT:-3583}",
-    "hello": "./scripts/flue-run.sh run hello --target node --id test-1 --env .env --payload",
+    "curator": "./scripts/flue-run.sh run curator --target node --id test-1 --env .env --payload",
+    "retriever": "./scripts/flue-run.sh run retriever --target node --id test-1 --env .env --payload",
     "build": "flue build --target node",
     "start": "node dist/server.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@flue/sdk": "latest",
+    "just-bash": "^3.0.0",
     "valibot": "latest"
   },
   "devDependencies": {

@@ -1,49 +1,259 @@
 # AGENTS.md
 
-Minimal Flue starter project. One webhook agent that says hello, routed through OpenRouter → DeepSeek v4 Flash → NovitaAI.
+Memory-bank agents on top of Flue. Two webhook agents:
 
-## Layout
+- **`curator`** — takes inbox items, lays them out into the right place
+  inside a named memory bank, keeps indexes in sync, and commits every
+  change to the bank's git repo.
+- **`retriever`** — answers one question strictly from the contents of a
+  bank, with absolute-path citations for every file it used.
 
-- `.flue/agents/<name>.ts` — agent source (e.g. `hello.ts`)
-- `.flue/roles/` — role markdowns (currently empty)
-- `scripts/flue-run.sh` — wrapper that falls back to `$OPENROUTER_FLUE` if `.env` lacks `OPENROUTER_API_KEY`
-- `dist/` — output of `flue build` (gitignored)
-- `.env` — secrets (gitignored). Copy from `.env.example`
+> **Project idea / "why" lives in [IDEA.md](./IDEA.md).** This file is the
+> "how": layout, API contract, configuration, and operational notes. Read
+> IDEA.md first if you want the design philosophy and motivation; come back
+> here for the engineering details.
 
-Flue auto-discovers `.flue/agents/*.ts`. Adding a new file is enough — no registration needed.
+## Concept (TL;DR)
+
+Multiple named **memory banks** live under a single root (default
+`~/.bank-memory/`). Each bank has its own git repo at `<root>/<bank>/.git/`
+and the agent operates exclusively inside `<root>/<bank>/fs/` — the `.git/`
+dir sits one level outside the agent's sandbox so it physically cannot be
+touched. Callers post items (inline text or `file://` / `http(s)://` paths)
+to one HTTP endpoint along with the bank name; the agent copies them into
+`fs/_raw/`, uses bash / read / write / edit / grep / glob (all routed through
+[`just-bash`](https://www.npmjs.com/package/just-bash) sandboxed at `fs/`)
+to inspect and lay out the bank, sweeps any leftovers into `fs/_unsorted/`,
+and commits via real git from the host side.
+
+## On-disk layout
+
+```
+~/.bank-memory/                       (configurable via MEMORY_BANK_ROOT)
+└── <bank-name>/                      git repo root
+    ├── .git/                         git data — agent NEVER sees this
+    ├── .gitignore
+    └── fs/                           agent's sandbox root, mounted at "/"
+        ├── _raw/                     inbox, populated by the API
+        ├── _unsorted/                items the agent (or the safety sweep)
+        │                             could not classify
+        ├── _index.md                  bank index, maintained by the agent
+        └── ...                       folders/files the agent creates
+                                      (notes/, projects/, recipes/, …)
+```
+
+## Flow per request
+
+1. **Validate** bank name (must match `[a-z0-9][a-z0-9-]*`).
+2. **Scaffold** the bank if missing: create `<bank>/fs/_raw/`, `<bank>/fs/_index.md`,
+   `<bank>/.gitignore`, then `git init` at `<bank>/`.
+3. **Ingest** every `items[]` into `<bank>/fs/_raw/`. `kind: "inline"` writes
+   the text directly; `kind: "path"` with a `file://` URI copies, with an
+   `http(s)://` URI downloads. Filenames are sanitised and de-duplicated
+   (`foo.md`, `foo-1.md`, ...).
+4. **Commit** the ingest step (`ingest: N item(s) into fs/_raw/`).
+5. **Short-circuit** if `fs/_raw/` is empty (no LLM call, return early).
+6. **Run the curator**: `init({ sandbox: createBankBashFactory(fsPath), ... })`
+   gives Flue's built-in tools (`bash`, `read`, `write`, `edit`, `grep`,
+   `glob`) but routed through `just-bash` + `ReadWriteFs` rooted at
+   `<bank>/fs/`. The LLM iterates with those tools, then returns a structured
+   `{ summary: string }`.
+7. **Sweep** anything still left in `fs/_raw/` into `fs/_unsorted/` (safety
+   net so `_raw/` is guaranteed empty after a run).
+8. **Diff** via `git status --porcelain -z -uall` (paths get stripped of the
+   `fs/` prefix; everything outside `fs/` is dropped from the report).
+9. **Commit** the curate step (`curate: <summary>`) if anything changed.
+10. **Return** a structured report (`processed`, `skipped`, `commits`, `meta`).
+
+## Layout (code)
+
+- `.flue/agents/curator.ts` — curator entry point: orchestrates ingest →
+  sandbox → sweep → commit → report.
+- `.flue/agents/retriever.ts` — retriever entry point: validates bank,
+  runs a read-only Flue session over `<bank>/fs/`, returns
+  `{ answer, references[] }` with absolute paths.
+- `.flue/roles/curator.md` — curator system prompt.
+- `.flue/roles/retriever.md` — retriever system prompt (strict
+  no-hallucination rules + absolute-path citation requirement).
+- `src/bank.ts` — bank path resolution (`bankRoot`, `bankPath`,
+  `bankFsPath`, `rawDir`) and scaffold creation.
+- `src/ingest.ts` — copy inline text / files / URLs into `fs/_raw/`.
+- `src/git.ts` — `git init` + autocommits at the repo root (`<bank>/`).
+- `src/bash-factory.ts` — wraps `just-bash` (`ReadWriteFs` rooted at
+  `<bank>/fs/`) into a Flue `BashFactory`.
+- `src/changes.ts` — parse `git status --porcelain` output and strip the
+  `fs/` prefix so reports talk in agent-side paths.
+- `src/sweep.ts` — move leftover `fs/_raw/` files into `fs/_unsorted/`.
+- `src/log-types.ts` — minimal `FlueLogger` interface for util modules
+  that don't want to import the whole SDK type bundle.
+- `scripts/flue-run.sh` — wrapper that falls back to `$OPENROUTER_FLUE` if
+  `.env` lacks `OPENROUTER_API_KEY`.
+
+Flue auto-discovers `.flue/agents/*.ts` and `.flue/roles/*.md`. Adding a new
+agent file is enough — no registration.
+
+## API contract
+
+### Curator
+
+```
+POST http://localhost:3583/agents/curator/<run-id>
+Content-Type: application/json
+
+{
+  "bank": "personal-notes",
+  "items": [
+    { "kind": "inline", "content": "...", "filename": "thought.md" },
+    { "kind": "path",   "uri": "file:///Users/me/Downloads/article.html" },
+    { "kind": "path",   "uri": "https://example.com/page" }
+  ],
+  "hint": "optional free-text hint for the curator"
+}
+```
+
+`bank` is required. `items` may be empty (the agent will still process
+whatever is already sitting in `fs/_raw/`, or short-circuit if it's empty).
+
+### Response
+
+```json
+{
+  "bank": "personal-notes",
+  "summary": "Filed 3 notes under notes/, updated index",
+  "processed": [
+    { "status": "untracked", "path": "notes/2026-05-13-thought.md" },
+    { "status": "modified",  "path": "_index.md" },
+    { "status": "deleted",   "path": "_raw/thought.md" }
+  ],
+  "skipped": [
+    { "status": "untracked", "path": "_unsorted/unclear.txt" }
+  ],
+  "commits": ["a1b2c3d", "e4f5g6h"],
+  "bash_calls": 7,
+  "meta": { "model": "...", "tokens": { ... }, "cost": { ... } }
+}
+```
+
+`processed` / `skipped` are derived from `git status` — `git` is the source
+of truth, not the LLM's report. Paths are relative to `fs/`. Anything
+landing under `_unsorted/` is reported as `skipped`; everything else is
+`processed`.
+
+### Retriever
+
+```
+POST http://localhost:3583/agents/retriever/<run-id>
+Content-Type: application/json
+
+{
+  "bank": "personal-notes",
+  "question": "What does R2 mean in the ARS rounds?",
+  "hint": "optional free-text hint, e.g. 'look under ars/'"
+}
+```
+
+`bank` and `question` are required. The retriever opens a Flue session over
+`<bank>/fs/` with the same `BashFactory` sandbox the curator uses (it is
+read-only by convention — see the role doc — and any unexpected write is
+logged after the run via `git status`).
+
+If the bank does not exist on disk, the retriever short-circuits and
+returns the "no data" response without calling the LLM.
+
+#### Response
+
+```json
+{
+  "bank": "personal-notes",
+  "answer": "R2 is the second round of evaluation, focused on …",
+  "references": [
+    {
+      "path": "/Users/me/.bank-memory/personal-notes/fs/ars/v5/_index.md",
+      "why": "defines the round-naming convention R1/R2/R3"
+    },
+    {
+      "path": "/Users/me/.bank-memory/personal-notes/fs/ars/v5/r2-report.md",
+      "why": "contains R2 results and methodology"
+    }
+  ],
+  "meta": {
+    "model": "...",
+    "tokens": { ... },
+    "cost": { ... },
+    "bash_calls": 6,
+    "unexpected_writes": 0
+  }
+}
+```
+
+`references[].path` is always an **absolute filesystem path** on the host —
+the caller can `cat` / `read` it directly. If the bank contains nothing
+relevant, the retriever returns `answer` exactly equal to
+`"No relevant data found in the memory bank."` and `references` as `[]`.
 
 ## Commands
 
 ```bash
-npm run dev               # flue dev --target node, port 3583, hot reload
-npm run hello -- '{"name":"Arseny"}'   # one-shot CLI run, no server
-npm run build             # production bundle to dist/
-npm run start             # node dist/server.mjs (after build)
-npm run typecheck         # tsc --noEmit
+npm run dev                            # flue dev --target node, port 3583
+npm run curator -- '{"bank":"demo","items":[{"kind":"inline","content":"hello"}]}'
+npm run build                          # production bundle to dist/
+npm run start                          # node dist/server.mjs (after build)
+npm run typecheck                      # tsc --noEmit
 ```
 
-For local dev hit the agent at `POST http://localhost:3583/agents/<name>/<id>`.
+For local dev hit the agent at `POST http://localhost:3583/agents/curator/<id>`.
 
-## Key facts (learned the hard way)
+## Configuration
 
-- **Package name**: SDK is `@flue/sdk`, NOT `@flue/runtime` (the on-main README is out of date). Import types from `'@flue/sdk'`.
-- **Model**: `openrouter/deepseek/deepseek-v4-flash`. Flue's model registry is at https://flueframework.com/models.json.
-- **NovitaAI routing**: OpenRouter's provider routing is set via the request-body `provider: { order: ['novita'] }` field. Flue's `configureProvider()` only exposes `baseUrl/headers/apiKey`, so this can't be pinned in code today. Workaround: set provider preferences for this model in your OpenRouter account dashboard.
-- **API key fallback**: `npm run dev` / `npm run hello` go through `scripts/flue-run.sh`, which exports `OPENROUTER_API_KEY=$OPENROUTER_FLUE` only if `.env` doesn't already define the key. `.env` wins; shell `$OPENROUTER_FLUE` is the fallback.
-- **Cost/usage**: `session.prompt()` returns `{ data, usage, model }`. `usage` includes `input/output/cacheRead/cacheWrite/totalTokens` and `cost.{input,output,cacheRead,cacheWrite,total}` in USD — already computed by the SDK against the active model's cost table. No need to call OpenRouter `/generation` separately.
+- `OPENROUTER_API_KEY` — required, OpenRouter API key. Falls back to
+  `$OPENROUTER_FLUE` when `.env` is missing the key.
+- `MEMORY_BANK_ROOT` — optional, root directory for all banks. Defaults to
+  `~/.bank-memory`. Supports `~` expansion.
+- `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` — optional, override the git identity
+  used for autocommits. Default: `memory-bank curator <curator@bank-memory.local>`.
+
+## Constraints / non-goals (v1)
+
+- Single-threaded — no locks; concurrent calls to the same bank may race.
+- Local git only — no remote pushes.
+- Retriever read-only enforcement is by convention only — the sandbox is
+  read/write, so a misbehaving run could mutate files. We detect it via
+  `git status` post-run and log a warning, but we don't roll back.
+- No vector store / embeddings — both agents reason over raw text and
+  filesystem tools.
+- Binary inbox items are moved as-is (no OCR / content extraction).
+
+## Key facts about Flue (learned the hard way)
+
+- **Package name**: SDK is `@flue/sdk`. Import types from `'@flue/sdk'`.
+- **Model**: `openrouter/deepseek/deepseek-v4-flash`. Model registry at
+  https://flueframework.com/models.json.
+- **Custom tool names cannot conflict with built-ins** (`read`, `write`,
+  `edit`, `bash`, `grep`, `glob`, `task`). Use `sandbox: BashFactory` to
+  route the built-ins through your own runtime instead of adding a custom
+  tool — that's exactly what `src/bash-factory.ts` does.
+- **`init({ sandbox })` accepts a `BashFactory`** of shape `() => BashLike`.
+  `BashLike` has `exec`, `getCwd`, and an `fs` surface with read/write/stat/
+  readdir/mkdir/rm/etc. We wrap `just-bash`'s `Bash` + `ReadWriteFs` into
+  this shape.
+- **NovitaAI routing**: OpenRouter's provider routing is set via the
+  request-body `provider` field. Flue's `configureProvider()` only exposes
+  `baseUrl/headers/apiKey`, so pin Novita via provider preferences on the
+  OpenRouter model page.
+- **Cost/usage**: `session.prompt()` returns `{ data, usage, model }`. `usage`
+  includes `input/output/cacheRead/cacheWrite/totalTokens` plus
+  `cost.{input,output,cacheRead,cacheWrite,total}` in USD.
+- **API key fallback**: `npm run dev` / `npm run curator` go through
+  `scripts/flue-run.sh`, which exports `OPENROUTER_API_KEY=$OPENROUTER_FLUE`
+  only if `.env` doesn't already define the key.
+- **just-bash quirk**: between `exec()` calls, cwd / env / functions reset —
+  only the filesystem is shared. The curator role doc reminds the LLM to
+  chain dependent commands with `&&` or use absolute paths.
 
 ## Docs
 
 - Homepage: https://flueframework.com/
 - README (main): https://github.com/withastro/flue/blob/main/README.md
 - Node.js deploy guide: https://github.com/withastro/flue/blob/main/docs/deploy-node.md
-- Other deploy guides (Cloudflare, GitHub Actions, GitLab, Render): https://github.com/withastro/flue/tree/main/docs
 - Models list: https://flueframework.com/models.json
-- Skill (this project was scaffolded from): https://flueframework.com/start.md
-
-## When extending
-
-- New agent: drop `.flue/agents/<name>.ts` with `export const triggers = { webhook: true }` and a default async function `({ init, payload }: FlueContext) => ...`.
-- New role (subagent persona): drop `.flue/roles/<name>.md` with frontmatter `description:` + body, then `prompt(..., { role: '<name>' })`.
-- Custom skills: `.agents/skills/<name>/SKILL.md` — see deploy-node guide.
-- Persistence on Node: in-memory by default; pass a `persist` store to `init()` for durable sessions.
+- just-bash: https://github.com/vercel-labs/just-bash
