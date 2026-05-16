@@ -197,11 +197,13 @@ relevant, the retriever returns `answer` exactly equal to
 npm run dev                            # flue dev --target node, port 3583
 npm run curator -- '{"bank":"demo","items":[{"kind":"inline","content":"hello"}]}'
 npm run build                          # production bundle to dist/
-npm run start                          # node dist/server.mjs (after build)
+npm run start                          # node dist/server.mjs (after build), port from $PORT (default 3000)
+npm run serve                          # build + run production server on fixed port 47823 (stable URL for skills)
 npm run typecheck                      # tsc --noEmit
 ```
 
 For local dev hit the agent at `POST http://localhost:3583/agents/curator/<id>`.
+For production-style serving (skills, manual testing) use `npm run serve`, then hit `POST http://localhost:47823/agents/<name>/<id>`. The port `47823` is fixed on purpose — skills can hard-code this URL.
 
 ## Configuration
 

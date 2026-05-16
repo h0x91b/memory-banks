@@ -192,12 +192,12 @@ Step 1  (orient, no tools): index map shows /ars/v5/ with sub-files
 Step 2  (1 bash):
           rg -l -i "hook_violation|modifier curve" /ars/v5
         → 4 files: errors_full_r2.md, errors_full_main_r3.md,
-                   errors_full_arseny_r1.md, economics_full_main_R3.md
+                   errors_full_alt_r1.md, economics_full_main_R3.md
 
 Step 3  (4 reads, one per file, in parallel):
           read /ars/v5/errors_full_main_r3.md
           read /ars/v5/errors_full_r2.md
-          read /ars/v5/errors_full_arseny_r1.md
+          read /ars/v5/errors_full_alt_r1.md
           read /ars/v5/economics_full_main_R3.md
 
 Step 4  (synthesize + answer)

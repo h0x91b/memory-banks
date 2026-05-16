@@ -9,6 +9,7 @@
     "retriever": "./scripts/flue-run.sh run retriever --target node --id test-1 --env .env --payload",
     "build": "flue build --target node",
     "start": "node dist/server.mjs",
+    "serve": "npm run build && PORT=47823 node dist/server.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
