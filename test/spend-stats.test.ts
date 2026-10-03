@@ -8,7 +8,7 @@ import { after, before, describe, test } from 'node:test';
 import { Hono } from 'hono';
 import type { PromptUsage } from '@flue/runtime';
 
-import { SpendLedger, costFromUsage } from '../src/spend-ledger.ts';
+import { SpendLedger, costFromUsage, recordAgentCall, sharedSpendLedger } from '../src/spend-ledger.ts';
 import { computePeriods, normalizeTimezone } from '../src/stats-periods.ts';
 import { createStatsRouter, httpStatsMiddleware, type BankLookupState } from '../src/stats-router.ts';
 
@@ -333,6 +333,71 @@ describe('HTTP stats middleware', () => {
       assert.equal(await res.text(), 'ok');
     } finally {
       console.error = original;
+    }
+  });
+});
+
+describe('pipeline hook', () => {
+  const meta = (executionId: string) => ({ executionId, bank: 'alpha', agent: 'librarian', runId: 'r1', model: 'openai/gpt-6-luna' });
+
+  test('success records the returned usage and passes the result through', async () => {
+    const ledger = freshLedger();
+    const reply = { data: { summary: 'ok' }, usage: usage(0.05), toolCalls: ['bash'] };
+    assert.equal(await recordAgentCall(ledger, meta('librarian-r1-aaaa'), async () => reply), reply);
+    const [e] = (await ledger.read()).events;
+    assert.equal(e.kind, 'model_call');
+    assert.equal(e.kind === 'model_call' && e.cost_usd, 0.05);
+    assert.equal(e.kind === 'model_call' && e.run_id, 'r1');
+  });
+
+  test('a failed call is recorded as missing cost and the error is rethrown unchanged', async () => {
+    const ledger = freshLedger();
+    const boom = new Error('model timeout');
+    await assert.rejects(recordAgentCall(ledger, meta('librarian-r1-bbbb'), async () => {
+      throw boom;
+    }), (err) => err === boom);
+    const app = createStatsRouter({ ledger, now: () => new Date() });
+    const body = await (await app.request('/v1/stats')).json();
+    assert.equal(body.periods.today.model.calls, 1);
+    assert.equal(body.periods.today.model.calls_missing_cost, 1);
+    assert.equal(body.periods.today.model.known_cost_usd, 0);
+  });
+
+  test('a client retry is a new execution and counts again', async () => {
+    const ledger = freshLedger();
+    await recordAgentCall(ledger, meta('librarian-r1-cccc'), async () => ({ usage: usage(0.1) }));
+    await recordAgentCall(ledger, meta('librarian-r1-dddd'), async () => ({ usage: usage(0.1) }));
+    const body = await (await createStatsRouter({ ledger }).request('/v1/stats')).json();
+    assert.equal(body.periods.today.model.known_cost_usd, 0.2);
+  });
+
+  test('a broken ledger never fails the pipeline', async () => {
+    const original = console.error;
+    console.error = () => {};
+    try {
+      const broken = {
+        recordModelCall: async () => {
+          throw new Error('disk full');
+        },
+        recordHttpRequest: async () => ({ recorded: false }),
+      };
+      assert.deepEqual(await recordAgentCall(broken, meta('x'), async () => ({ usage: null })), { usage: null });
+    } finally {
+      console.error = original;
+    }
+  });
+
+  test('sharedSpendLedger is one instance per ledger path', () => {
+    const prev = process.env.MEMORY_BANK_ACCOUNTING_DIR;
+    try {
+      process.env.MEMORY_BANK_ACCOUNTING_DIR = path.join(dir, 'shared-a');
+      const a = sharedSpendLedger();
+      assert.equal(sharedSpendLedger(), a);
+      process.env.MEMORY_BANK_ACCOUNTING_DIR = path.join(dir, 'shared-b');
+      assert.notEqual(sharedSpendLedger(), a);
+    } finally {
+      if (prev === undefined) delete process.env.MEMORY_BANK_ACCOUNTING_DIR;
+      else process.env.MEMORY_BANK_ACCOUNTING_DIR = prev;
     }
   });
 });

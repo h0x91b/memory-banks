@@ -131,10 +131,14 @@ GET /v1/banks/personal-notes/stats?timezone=Asia/Jerusalem
 
 | Where | What to add |
 |---|---|
-| `.flue/app.ts` | `const ledger = new SpendLedger();` `app.use('*', httpStatsMiddleware(ledger));` before the routes, and `app.route('/', createStatsRouter({ ledger, banks: new BankRegistry() }))` (`src/banks/index.ts`); swap the local `apiError` helper for the shared `ApiError` envelope |
-| Librarian pipeline, after `agent.read()` | `ledger.recordModelCall({ executionId: instanceId, bank, agent: 'librarian', runId, model: MODEL_ID, usage })` |
-| Retriever pipeline, after `agent.read()` | the same with `agent: 'retriever'` |
-| Both pipelines, when the agent call throws | the same with `usage: null`, so the paid-but-failed attempt shows up as `calls_missing_cost` |
+| `.flue/app.ts` | `const ledger = sharedSpendLedger();` `app.use('*', httpStatsMiddleware(ledger));` before the routes, and `app.route('/', createStatsRouter({ ledger, banks: new BankRegistry() }))` (`src/banks/index.ts`); swap the local `apiError` helper for the shared `ApiError` envelope |
+| Librarian pipeline | wrap the agent call: `recordAgentCall(sharedSpendLedger(), { executionId: instanceId, bank, agent: 'librarian', runId, model: MODEL_ID }, async () => readStructuredReply(await agent.read(await agent.dispatch(...)), Schema))` |
+| Retriever pipeline | the same with `agent: 'retriever'` |
+
+`recordAgentCall` records the returned usage on success. If the call throws,
+it records the attempt with no usage (shows up as `calls_missing_cost`) and
+rethrows the same error. A ledger write failure is logged and never fails the
+pipeline.
 
 `executionId` must be unique per paid attempt: the fresh agent instance id
 (`freshInstanceId`) already is. A retried HTTP request gets a new instance id

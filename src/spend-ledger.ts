@@ -237,3 +237,54 @@ export class SpendLedger implements SpendRecorder {
     return run;
   }
 }
+
+const shared = new Map<string, SpendLedger>();
+
+/**
+ * Process-wide ledger for the current `defaultLedgerPath()`. Server routes and
+ * pipelines must share one instance so they share the write queue and the
+ * in-memory id set. Resolved per call, so tests that switch
+ * `MEMORY_BANK_ROOT` get their own file.
+ */
+export function sharedSpendLedger(): SpendLedger {
+  const file = defaultLedgerPath();
+  let ledger = shared.get(file);
+  if (!ledger) shared.set(file, (ledger = new SpendLedger(file)));
+  return ledger;
+}
+
+/**
+ * Pipeline hook: run one paid agent execution and record its spend.
+ *
+ * `call` resolves to anything carrying the returned `usage` (e.g. the result
+ * of `readStructuredReply`). If it throws, the attempt is recorded with no
+ * usage — it may have been billed, so it shows up as missing cost rather than
+ * vanishing — and the error is rethrown unchanged. A failure to write the
+ * ledger is logged and never fails the pipeline.
+ *
+ * `executionId` must be unique per paid attempt; the fresh agent instance id
+ * (`freshInstanceId`) is.
+ */
+export async function recordAgentCall<T extends { usage: PromptUsage | null }>(
+  recorder: SpendRecorder,
+  meta: Omit<ModelCallInput, 'usage' | 'at'>,
+  call: () => Promise<T>,
+): Promise<T> {
+  let result: T;
+  try {
+    result = await call();
+  } catch (err) {
+    await safeRecord(recorder, { ...meta, usage: null });
+    throw err;
+  }
+  await safeRecord(recorder, { ...meta, usage: result.usage });
+  return result;
+}
+
+async function safeRecord(recorder: SpendRecorder, input: ModelCallInput): Promise<void> {
+  try {
+    await recorder.recordModelCall(input);
+  } catch (err) {
+    console.error('[spend] failed to record model call', err);
+  }
+}
