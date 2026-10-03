@@ -13,12 +13,14 @@ import { after, before, beforeEach, test } from 'node:test';
 import { Hono } from 'hono';
 
 import { BankRegistry } from '../src/banks/index.ts';
+import { IngestionStore } from '../src/ingestions/index.ts';
 import {
   EMPTY_ANSWER,
   SNAPSHOTS_DIR,
   createQueryRouter,
   mapReference,
   type CompletedRevision,
+  type PendingIngestionSource,
   type PendingIngestions,
   type RetrieveFn,
   type RetrieveInput,
@@ -30,6 +32,7 @@ let counter = 0;
 let registry: BankRegistry;
 let records: Map<string, CompletedRevision | null>;
 let pending: Map<string, PendingIngestions> | null;
+let ingestionSource: PendingIngestionSource | null;
 let retrieve: RetrieveFn;
 let calls: RetrieveInput[];
 
@@ -48,6 +51,7 @@ beforeEach(async () => {
   registry = new BankRegistry();
   records = new Map();
   pending = null;
+  ingestionSource = null;
   calls = [];
   retrieve = async () => ({ answer: 'unused', references: [], meta: {} });
 });
@@ -63,6 +67,7 @@ function makeApp() {
         calls.push(input);
         return retrieve(input);
       },
+      ...(ingestionSource ? { ingestions: ingestionSource } : {}),
       ...(pending
         ? { ingestions: { pendingCounts: async (bank: string) => pending!.get(bank) ?? { queued: 0, running: 0 } } }
         : {}),
@@ -383,4 +388,32 @@ test('mapReference keeps escapes and empty paths honest', () => {
   assert.equal(mapReference({ path: `${snap}/../../x`, why: '' }, snap, live).path, `${snap}/../../x`);
   assert.equal(mapReference({ path: '  ', why: 'w' }, snap, live).path, '');
   assert.equal(mapReference({ path: '/', why: '' }, snap, live).path, live);
+});
+
+test('accepted ingestions from the real store are reported as pending, not searchable', async () => {
+  const sha = await bankWithRevision('intake');
+  const store = new IngestionStore(registry);
+  ingestionSource = store;
+  const text = (body: string) => ({ kind: 'text' as const, bytes: Buffer.from(body) });
+  await store.accept({ bank: 'intake', items: [text('fresh fact one')] });
+  await store.accept({ bank: 'intake', items: [text('fresh fact two')] });
+  let seenFiles: string[] = [];
+  retrieve = async ({ readRoot }) => {
+    seenFiles = await fs.readdir(readRoot, { recursive: true });
+    return { answer: EMPTY_ANSWER, references: [], meta: {} };
+  };
+
+  let res = await query('intake', { question: 'fresh fact?' });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.revision, sha);
+  assert.equal(res.body.processing.searchable, true);
+  assert.deepEqual(res.body.processing.pendingIngestions, { queued: 2, running: 0 });
+  assert.ok(!seenFiles.some((f) => f.includes('_raw/') && f !== '_raw'), 'accepted input must not be readable yet');
+
+  const claim = await store.claimBatch({ bank: 'intake', workerId: 'w1', leaseMs: 60_000 });
+  assert.ok(claim);
+  await store.accept({ bank: 'intake', items: [text('arrived during the run')] });
+  res = await query('intake', { question: 'fresh fact?' });
+  assert.deepEqual(res.body.processing.pendingIngestions, { queued: 1, running: 2 });
+  assert.equal(res.body.revision, sha, 'a running batch does not change the answered revision');
 });
