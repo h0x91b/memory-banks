@@ -18,6 +18,7 @@ export type ApiErrorCode =
   | 'idempotency_conflict'
   | 'payload_too_large'
   | 'unsupported_media_type'
+  | 'snapshot_failed'
   | 'internal_error';
 
 export type ApiErrorStatus = 400 | 404 | 409 | 413 | 415 | 500;
@@ -36,6 +37,7 @@ const STATUS: Record<ApiErrorCode, ApiErrorStatus> = {
   idempotency_conflict: 409,
   payload_too_large: 413,
   unsupported_media_type: 415,
+  snapshot_failed: 500,
   internal_error: 500,
 };
 
