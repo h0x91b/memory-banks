@@ -151,6 +151,80 @@ test('accepted ingestion is pending, not searchable; a bank without a repo has n
   assert.deepEqual(res.body.processing.pendingIngestions, { queued: 1, running: 0 });
 });
 
+function ledgerFor(bank: string): any[] {
+  let text = '';
+  try {
+    text = readFileSync(path.join(bankRoot, '.accounting', 'ledger.jsonl'), 'utf8');
+  } catch {
+    return [];
+  }
+  return text
+    .split('\n')
+    .filter(Boolean)
+    .map((l) => JSON.parse(l))
+    .filter((e) => e.bank === bank);
+}
+
+test('a bank created through the API has no completed revision until its first run completes', async () => {
+  assert.equal((await call('POST', '/v1/banks', { id: 'fresh' })).status, 201);
+  const accepted = await call('POST', '/v1/banks/fresh/ingestions', { items: [{ type: 'text', text: 'hello' }] });
+  assert.equal(accepted.status, 202, JSON.stringify(accepted.body));
+
+  let modelCalls = 0;
+  fx.faux.setResponses([
+    () => {
+      modelCalls++;
+      return fx.fauxAssistantMessage([fx.fauxToolCall('submit_result', { answer: 'x', references: [] })], {
+        stopReason: 'toolUse',
+      });
+    },
+  ]);
+  const res = await call('POST', '/v1/banks/fresh/query', { question: 'Anything?' });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.answer, 'No relevant data found in the memory bank.');
+  assert.deepEqual(res.body.references, []);
+  assert.equal(res.body.revision, null);
+  assert.equal(res.body.processing.searchable, false);
+  assert.equal(res.body.processing.reason, 'no_completed_revision');
+  assert.deepEqual(res.body.processing.pendingIngestions, { queued: 1, running: 0 });
+  assert.equal(modelCalls, 0, 'the model is not called');
+  assert.deepEqual(ledgerFor('fresh').filter((e) => e.agent), [], 'nothing is spent');
+
+  // The first successful run under the bank lock becomes the answering revision.
+  const completed = await mutation.withBankMutation('fresh', async (m: any) => {
+    liveWrite('fresh', 'notes/hello.md', '# Hello\n');
+    gitCommit('fresh', 'curate: hello');
+    return (await m.markCompleted({ by: 'worker', runId: 'batch-fresh' })).revision;
+  });
+  const after = await call('POST', '/v1/banks/fresh/query', { question: 'Anything?' });
+  assert.equal(after.status, 200, JSON.stringify(after.body));
+  assert.equal(modelCalls, 1);
+  assert.equal(after.body.revision, completed);
+  assert.equal(after.body.processing.searchable, true);
+  assert.equal(after.body.processing.revisionSource, 'worker');
+  assert.equal(after.body.processing.provenance, 'verified');
+  assert.ok(ledgerFor('fresh').some((e) => e.agent === 'retriever'), 'a real query is accounted');
+});
+
+test('a pre-existing bank with history and no record is still answered from a bootstrap revision', async () => {
+  mkdirSync(path.join(bankRoot, 'legacy'), { recursive: true });
+  execFileSync('git', ['init', '-q', '--initial-branch=main'], { cwd: path.join(bankRoot, 'legacy') });
+  liveWrite('legacy', 'people/ann.md', '# Ann\n\nAnn lives in Lisbon.\n');
+  const sha = gitCommit('legacy', 'curate: Ann');
+
+  fx.faux.setResponses([
+    fx.fauxAssistantMessage([fx.fauxToolCall('submit_result', { answer: 'Lisbon.', references: [] })], {
+      stopReason: 'toolUse',
+    }),
+  ]);
+  const res = await call('POST', '/v1/banks/legacy/query', { question: 'Where does Ann live?' });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.revision, sha);
+  assert.equal(res.body.processing.searchable, true);
+  assert.equal(res.body.processing.revisionSource, 'bootstrap');
+  assert.equal(res.body.processing.provenance, 'unverified');
+});
+
 test('errors use the /v1 envelope', async () => {
   const expectError = async (url: string, body: unknown, status: number, code: string) => {
     const res = await call('POST', url, body);

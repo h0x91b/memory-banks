@@ -29,6 +29,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import { BANK_NAME_RE, bankRoot, ensureBank } from '../bank.ts';
+import { withBankMutation } from '../bank-mutation.ts';
 import { gitEnsureRepo } from '../git.ts';
 import { ApiError } from './errors.ts';
 
@@ -251,8 +252,13 @@ export class BankRegistry implements BankLifecycleGuard, DurableWorkGuard {
       if (existsSync(this.bankDir(input.id)) || (await this.readStored(input.id))) {
         throw new ApiError('bank_exists', `Bank "${input.id}" already exists`, { bank: input.id });
       }
-      const { repoPath } = await ensureBank(input.id);
-      await gitEnsureRepo(repoPath);
+      // Scaffold under the bank mutation lock: taken before the repo exists,
+      // its baseline records `revision: null`, so the scaffold commit is never
+      // a searchable revision; the first completed run is.
+      await withBankMutation(input.id, async () => {
+        const { repoPath } = await ensureBank(input.id);
+        await gitEnsureRepo(repoPath);
+      });
       const now = new Date().toISOString();
       const record: BankRecord = {
         id: input.id,
