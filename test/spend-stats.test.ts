@@ -316,6 +316,27 @@ describe('HTTP stats middleware', () => {
     );
   });
 
+  test('route lookup failure (foreign Hono copy) records "unknown" and keeps the response', async () => {
+    const ledger = freshLedger();
+    const mw = httpStatsMiddleware(ledger);
+    const res = new Response('ok', { status: 200 });
+    const c: any = {
+      req: {
+        path: '/v1/banks/alpha/ask',
+        method: 'POST',
+        get matchedRoutes() {
+          throw new TypeError("Cannot read properties of undefined (reading '0')");
+        },
+      },
+      res,
+    };
+    await mw(c, async () => {});
+    assert.equal(c.res, res);
+    const [e] = (await ledger.read()).events;
+    assert.equal(e.kind === 'http_request' && e.route, 'unknown');
+    assert.equal(e.kind === 'http_request' && e.bank, 'alpha');
+  });
+
   test('a broken recorder never breaks the response', async () => {
     const app = new Hono();
     const original = console.error;

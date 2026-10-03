@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { Hono, type MiddlewareHandler } from 'hono';
-import { matchedRoutes } from 'hono/route';
+import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { BANK_NAME_RE } from './bank.ts';
+import { ApiError, errorEnvelope } from './banks/errors.ts';
 import type { LedgerReadResult, SpendRecorder } from './spend-ledger.ts';
 import { buildStats } from './spend-stats.ts';
 import { DEFAULT_TIMEZONE, normalizeTimezone } from './stats-periods.ts';
@@ -17,13 +17,8 @@ export interface BankLookup {
   lookup(bank: string): Promise<BankLookupState>;
 }
 
-/**
- * Same envelope and codes as the bank lifecycle API (`src/banks/errors.ts`):
- * `{ error: { code, message, details? } }`. Kept local until both modules
- * share a branch; swap for `ApiError` + `errorEnvelope` at wiring time.
- */
 function apiError(code: 'invalid_bank_id' | 'validation_error' | 'bank_not_found', message: string, details: Record<string, unknown>) {
-  return { error: { code, message, details } };
+  return errorEnvelope(new ApiError(code, message, details));
 }
 
 export interface StatsRouterOptions {
@@ -82,10 +77,22 @@ export function createStatsRouter(opts: StatsRouterOptions): Hono {
 const BANK_IN_PATH = /^\/v1\/banks\/([a-z0-9][a-z0-9-]*)(?:\/|$)/;
 const STATS_PATH = /^\/v1\/(?:banks\/[^/]+\/)?stats\/?$/;
 
+const REQUEST_BANK = Symbol('stats.requestBank');
+
+/**
+ * Attribute the current request to a bank the path does not name (the agent
+ * routes carry it in the JSON body). Invalid names are ignored.
+ */
+export function tagRequestBank(c: Context, bank: unknown): void {
+  if (typeof bank === 'string' && BANK_NAME_RE.test(bank.trim())) {
+    (c as unknown as Record<symbol, string>)[REQUEST_BANK] = bank.trim();
+  }
+}
+
 export interface HttpStatsOptions {
   /** Requests to leave out. Default: the stats endpoints themselves. */
   skip?: (path: string) => boolean;
-  /** Bank a request belongs to. Default: `:bank` from `/v1/banks/:bank/...`, else none. */
+  /** Bank a request belongs to. Default: `:bank` from `/v1/banks/:bank/...`, else `tagRequestBank`, else none. */
   bankOf?: (path: string) => string | null;
   now?: () => number;
 }
@@ -112,16 +119,13 @@ export function httpStatsMiddleware(recorder: SpendRecorder, opts: HttpStatsOpti
       thrown = true;
       throw err;
     } finally {
-      const status = thrown ? 500 : c.res.status;
-      const handlers = matchedRoutes(c).filter((r) => r.handler !== middleware && r.method !== 'ALL');
-      const route = handlers.at(-1)?.path ?? 'unmatched';
       try {
         await recorder.recordHttpRequest({
           requestId: randomUUID(),
-          bank: bankOf(path),
+          bank: bankOf(path) ?? (c as unknown as Record<symbol, string | undefined>)[REQUEST_BANK] ?? null,
           method: c.req.method,
-          route,
-          status,
+          route: matchedRoutePattern(c, middleware),
+          status: thrown ? 500 : c.res.status,
           durationMs: clock() - t0,
         });
       } catch (err) {
@@ -130,4 +134,20 @@ export function httpStatsMiddleware(recorder: SpendRecorder, opts: HttpStatsOpti
     }
   };
   return middleware;
+}
+
+/**
+ * Pattern of the route that handled the request, or `unmatched`. Read through
+ * `c.req` rather than the `hono/route` helper: the built server bundles its own
+ * Hono copy, and the helper's private symbol from another copy finds nothing
+ * and throws. Never throws itself — `unknown` if Hono's internals change.
+ */
+function matchedRoutePattern(c: Context, self: MiddlewareHandler): string {
+  try {
+    const routes = (c.req as unknown as { matchedRoutes: Array<{ handler: unknown; method: string; path: string }> })
+      .matchedRoutes;
+    return routes.filter((r) => r.handler !== self && r.method !== 'ALL').at(-1)?.path ?? 'unmatched';
+  } catch {
+    return 'unknown';
+  }
 }

@@ -2,6 +2,8 @@ import { Hono, type Context } from 'hono';
 import { ApiError, createBanksRouter, errorEnvelope } from '../src/banks/index.ts';
 import { bankRegistry, runLibrarianGuarded, runRetrieverGuarded } from '../src/guarded-runs.js';
 import { RequestError } from '../src/request.js';
+import { sharedSpendLedger } from '../src/spend-ledger.js';
+import { createStatsRouter, httpStatsMiddleware, tagRequestBank } from '../src/stats-router.js';
 
 /**
  * Route map. Both agents keep the original synchronous contract: POST a JSON
@@ -10,12 +12,16 @@ import { RequestError } from '../src/request.js';
  * around one agent submission each. Agent runs go through the bank lifecycle
  * guard: an archiving/archived bank answers 409 instead of running.
  *
- * /v1/* is the bank management API (docs/api/banks.md).
+ * /v1/* is the bank management API (docs/api/banks.md) plus spend and HTTP
+ * statistics (docs/api/stats.md). Every request is recorded in the spend
+ * ledger by the middleware registered before the routes.
  */
 const app = new Hono();
+app.use('*', httpStatsMiddleware(sharedSpendLedger()));
 
 async function handle(c: Context, run: (payload: any, runId: string) => Promise<unknown>) {
   const payload = await c.req.json().catch(() => undefined);
+  tagRequestBank(c, payload?.bank);
   try {
     return c.json(await run(payload, c.req.param('id') ?? 'run'));
   } catch (err) {
@@ -34,6 +40,7 @@ app.post('/agents/curator/:id', (c) => handle(c, runLibrarianGuarded));
 app.post('/agents/retriever/:id', (c) => handle(c, runRetrieverGuarded));
 
 app.route('/v1', createBanksRouter(bankRegistry));
+app.route('/', createStatsRouter({ ledger: sharedSpendLedger(), banks: bankRegistry }));
 app.notFound((c) =>
   c.req.path.startsWith('/v1/')
     ? c.json(errorEnvelope(new ApiError('not_found', `No route for ${c.req.method} ${c.req.path}`)), 404)

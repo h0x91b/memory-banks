@@ -77,7 +77,17 @@ and commits via real git from the host side.
   answers `409` with `code: bank_archiving | bank_archived` and is not touched.
   `/v1/*` is the bank management API (`src/banks/`, contract in
   `docs/api/banks.md`): create/list/get/patch/archive/restore, lifecycle state
-  under `<MEMORY_BANK_ROOT>/.lifecycle/`.
+  under `<MEMORY_BANK_ROOT>/.lifecycle/`. `GET /v1/stats` and
+  `GET /v1/banks/:bank/stats` report model spend and HTTP totals for today /
+  Monday week / calendar month (`docs/api/stats.md`); every request is
+  recorded by `httpStatsMiddleware`.
+- `src/spend-ledger.ts` — append-only spend/HTTP journal at
+  `<MEMORY_BANK_ROOT>/.accounting/ledger.jsonl`, idempotent per execution id;
+  `recordAgentCall` wraps each pipeline's agent call. Costs are estimates from
+  declared model rates, never an OpenRouter invoice; unknown cost is counted,
+  not zeroed.
+- `src/spend-stats.ts`, `src/stats-periods.ts`, `src/stats-router.ts` —
+  aggregation, DST-aware calendar periods (default `Asia/Jerusalem`), routes.
 - `.flue/agents/librarian.ts`, `.flue/agents/retriever.ts` — the `'use agent'`
   functions: model, sandbox, role instructions, structured result.
 - `src/librarian.ts` — librarian pipeline: ingest → agent → sweep → commit → report.
@@ -262,6 +272,8 @@ For production-style serving (skills, manual testing) use `npm run serve`, then 
   `$OPENROUTER_FLUE` when `.env` is missing the key.
 - `MEMORY_BANK_ROOT` — optional, root directory for all banks. Defaults to
   `~/.bank-memory`. Supports `~` expansion.
+- `MEMORY_BANK_ACCOUNTING_DIR` — optional, directory of the spend ledger.
+  Defaults to `<MEMORY_BANK_ROOT>/.accounting`.
 - `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` — optional, override the git identity
   used for autocommits. Default: `memory-bank librarian <librarian@bank-memory.local>`.
   Existing bank history keeps the old `memory-bank curator` author.

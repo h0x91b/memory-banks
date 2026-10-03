@@ -5,10 +5,6 @@ current calendar month. Code: `src/stats-router.ts` (routes, HTTP middleware),
 `src/spend-ledger.ts` (journal), `src/spend-stats.ts` (aggregation),
 `src/stats-periods.ts` (calendar boundaries).
 
-> Status: Librarian and retriever runs are recorded (`recordAgentCall` in
-> `src/librarian.ts`, `src/retriever.ts`). The routes and the HTTP middleware
-> are not mounted in `.flue/app.ts` yet. See "Wiring" below.
-
 ## Endpoints
 
 ```
@@ -129,10 +125,14 @@ GET /v1/banks/personal-notes/stats?timezone=Asia/Jerusalem
 
 ## Wiring
 
-| Where | State |
+| Where | What |
 |---|---|
-| `src/librarian.ts`, `src/retriever.ts` | Done: the agent call is wrapped in `recordAgentCall(sharedSpendLedger(), { executionId: instanceId, bank, agent, runId, model: MODEL_ID }, ...)` |
-| `.flue/app.ts` | Pending: `app.use('*', httpStatsMiddleware(sharedSpendLedger()))` before the routes, `app.route('/', createStatsRouter({ ledger: sharedSpendLedger(), banks: bankRegistry }))` with the shared registry from `src/guarded-runs.ts` |
+| `.flue/app.ts` | `httpStatsMiddleware(sharedSpendLedger())` before every route; `createStatsRouter({ ledger: sharedSpendLedger(), banks: bankRegistry })` with the shared registry from `src/guarded-runs.ts`; the agent handler calls `tagRequestBank(c, payload.bank)` so agent requests count toward their bank |
+| `src/librarian.ts`, `src/retriever.ts` | the agent call is wrapped in `recordAgentCall(sharedSpendLedger(), { executionId: instanceId, bank, agent, runId, model: MODEL_ID }, ...)` |
+
+HTTP events store the matched route pattern (`/agents/retriever/:id`), or
+`unmatched` for a 404 with no route. The stats endpoints themselves are not
+counted.
 
 `recordAgentCall` records the returned usage on success. If the call throws,
 it records the attempt with no usage (shows up as `calls_missing_cost`) and
