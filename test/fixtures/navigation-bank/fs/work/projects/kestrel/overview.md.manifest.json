@@ -1,0 +1,14 @@
+{
+  "title": "Kestrel project overview",
+  "keywords": [
+    "Kestrel",
+    "barcode scanner",
+    "warehouse",
+    "pilot",
+    "mobile app",
+    "budget"
+  ],
+  "glossary": {
+    "Kestrel": "Internal codename of the warehouse barcode-scanner mobile app"
+  }
+}
