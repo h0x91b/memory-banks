@@ -3,6 +3,9 @@ import { ApiError, createBanksRouter, errorEnvelope, isValidBankId } from '../sr
 import { bankRegistry, ingestionStore, runLibrarianGuarded, runRetrieverGuarded } from '../src/guarded-runs.js';
 import { createIngestionsRouter } from '../src/ingestions/index.ts';
 import { startIngestionWorker } from '../src/ingestion-worker/runtime.ts';
+import { completedRevisions } from '../src/bank-mutation.ts';
+import { createQueryRouter } from '../src/query/index.ts';
+import { retrieveFromSnapshot } from '../src/query/retrieve.ts';
 import { RequestError } from '../src/request.js';
 import { sharedSpendLedger } from '../src/spend-ledger.js';
 import { createStatsRouter, httpStatsMiddleware, tagRequestBank } from '../src/stats-router.js';
@@ -15,7 +18,8 @@ import { createStatsRouter, httpStatsMiddleware, tagRequestBank } from '../src/s
  * guard: an archiving/archived bank answers 409 instead of running.
  *
  * /v1/* is the bank management API (docs/api/banks.md), durable ingestion
- * (docs/api/ingestions.md) plus spend and HTTP statistics (docs/api/stats.md). Every request is recorded in the spend
+ * (docs/api/ingestions.md), queries over the last completed revision
+ * (docs/api/query.md) plus spend and HTTP statistics (docs/api/stats.md). Every request is recorded in the spend
  * ledger by the middleware registered before the routes.
  */
 const app = new Hono();
@@ -61,6 +65,17 @@ app.post('/v1/banks/:bank/ingestions', async (c, next) => {
   if (c.res.status === 202) ingestionWorker?.notify(c.req.param('bank'));
 });
 app.route('/v1', createIngestionsRouter(ingestionStore, bankRegistry));
+// Queries read an immutable snapshot of the last completed revision, never the
+// live tree the worker or a legacy Librarian run may be changing.
+app.route(
+  '/v1',
+  createQueryRouter({
+    guard: bankRegistry,
+    revisions: completedRevisions,
+    retrieve: retrieveFromSnapshot,
+    ingestions: ingestionStore,
+  }),
+);
 app.route('/', createStatsRouter({ ledger: sharedSpendLedger(), banks: bankRegistry }));
 app.notFound((c) =>
   c.req.path.startsWith('/v1/')

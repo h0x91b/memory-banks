@@ -69,7 +69,9 @@ A bank that exists but has never completed a run (for example, created moments a
 ingestion still queued) answers `200` with the no-data literal, `references: []`, `revision: null`,
 `processing.searchable: false`, `processing.reason: "no_completed_revision"` and the pending counts. The
 model is not called and nothing is spent. A pre-existing bank with history but no record yet is recorded
-once as a `bootstrap` revision and answered from it.
+once as a `bootstrap` revision and answered from it (that first query waits for a Librarian run already
+holding the bank lock, if any). The bootstrap baseline is chosen by the writer (`src/bank-mutation.ts`),
+never by the query side.
 
 ## Errors
 

@@ -19,22 +19,16 @@ import path from 'node:path';
 
 import { bankFsPath } from '../bank.ts';
 import { ApiError, assertBankId, type BankLifecycleGuard } from '../banks/index.ts';
+import type { CompletedRevision } from '../bank-mutation.ts';
 import { materializeSnapshot, type Snapshot } from './snapshot.ts';
 
 export const EMPTY_ANSWER = 'No relevant data found in the memory bank.';
 export const QUESTION_MAX = 4000;
 export const HINT_MAX = 4000;
 
-/** Read shape of src/bank-mutation.ts `CompletedRevision` (owned and written there). */
-export interface CompletedRevision {
-  bank: string;
-  revision: string | null;
-  completedAt: string;
-  by: 'worker' | 'legacy' | 'bootstrap';
-  runId: string;
-  ingestionIds?: string[];
-}
+export type { CompletedRevision };
 
+/** The read side of src/bank-mutation.ts (`completedRevisions`); this module never writes revisions. */
 export interface CompletedRevisionReader {
   /** Stored record; bootstraps a never-locked bank that has a repo. */
   resolve(bank: string): Promise<CompletedRevision | null>;
