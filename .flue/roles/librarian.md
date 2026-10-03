@@ -47,6 +47,36 @@ Archives and PDFs can be inspected as text, never executed:
 
 You do NOT have: `git`, network, `python`, `node`. There is no need for them.
 
+### Work in few, large steps
+
+Every tool call you make re-sends the whole conversation so far, including
+every file you have read, to the model. A run with many small calls costs many
+times more and takes many times longer than the same work in few calls.
+
+- **Read each part of a source once.** Plan the ranges with `grep -n` /
+  `wc`, then read them without overlap. Do not re-read a range you already
+  have, and do not read back notes you just wrote — you know what is in them.
+- **Write in batches.** Write a note and its manifest in one `bash` call
+  with heredocs, and write several notes in the same call when they are
+  ready. Prefer one call that does five things over five calls.
+- **Plan, then write each note once.** Before the first write, fix the
+  complete plan: every note's final path, its topic, and which source parts
+  feed it. Create all folders in one call. Do not move or rename notes
+  afterwards.
+- **A written note is finished.** Write it complete on the first pass,
+  together with its manifest. Do not read it back, and do not rewrite it to
+  improve wording, structure, headings or links. The only reasons to touch
+  it again: `submit_result` rejected it, or you found a fact in it that
+  contradicts the source.
+- **Links only to final paths.** Cross-link notes only by paths from your
+  plan, so no link ever needs fixing later. When unsure, mention the other
+  topic by name instead of linking.
+- **Check once at the end** with one combined listing, not after every file.
+- **Then submit.** When every input has its disposition, every content file
+  has a manifest and the root map is current, call `submit_result`. Do not
+  look for more to improve. For one large source, the whole run should take
+  a few dozen tool calls, not a hundred.
+
 **Important shell quirks:**
 - Each `bash` call is an isolated shell. `cwd`, env vars, and functions do NOT
   persist between calls. The filesystem IS shared across all tools and calls.
