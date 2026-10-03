@@ -119,6 +119,7 @@ test('JSON text + url: 202 {id,status,status_url}, stored durably, bank fs untou
       error: null,
     },
   );
+  assert.deepEqual(got.body.commits, []);
   assert.equal(got.body.items[1].kind, 'url');
   assert.equal(got.body.items[1].url, 'https://example.com/a?b=1');
   assert.equal(got.body.items[1].size, null, 'URL is a descriptor, nothing fetched');
@@ -386,10 +387,18 @@ test('worker port: batch claim, fencing, item bytes, reap, partial/failed outcom
   assert.ok(second);
   assert.equal(second.requests[0].attempts, 2);
   await assert.rejects(store.complete(second, []), /exactly one outcome/);
+  await assert.rejects(
+    store.complete(second, [
+      { requestId: r1, commits: ['not-a-sha'], items: [{ index: 0, status: 'succeeded' }, { index: 1, status: 'succeeded' }] },
+      { requestId: r2, items: [{ index: 0, status: 'succeeded' }] },
+    ]),
+    /hex shas/,
+  );
   const done = await store.complete(second, [
     {
       requestId: r1,
       revision: 'deadbeef',
+      commits: ['abc1234', 'deadbeef'],
       items: [
         { index: 0, status: 'succeeded' },
         { index: 1, status: 'failed', error: { code: 'fetch_failed', message: 'HTTP 404' } },
@@ -400,6 +409,8 @@ test('worker port: batch claim, fencing, item bytes, reap, partial/failed outcom
   assert.deepEqual(done.map((r) => r.status), ['partial', 'failed']);
   const got = (await send('GET', `/v1/banks/notes/ingestions/${r1}`)).body;
   assert.equal(got.revision, 'deadbeef');
+  assert.deepEqual(got.commits, ['abc1234', 'deadbeef']);
+  assert.deepEqual((await send('GET', `/v1/banks/notes/ingestions/${r2}`)).body.commits, [], 'no commits sent -> empty');
   assert.deepEqual(got.items[1].error, { code: 'fetch_failed', message: 'HTTP 404' });
   assert.ok(got.finishedAt);
   assert.deepEqual(await store.pendingCounts('notes'), { queued: 0, running: 0 });
