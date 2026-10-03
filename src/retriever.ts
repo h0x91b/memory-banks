@@ -4,7 +4,8 @@ import { init } from '@flue/runtime';
 import { BANK_NAME_RE, bankFsPath, bankPath } from './bank.js';
 import { readGitChanges } from './changes.js';
 import { bankLogger } from './console-log.js';
-import { collectIndexes } from './index-scan.js';
+import { buildBankBriefing, summarizeBriefing } from './bank-briefing/index.js';
+import { buildRetrieverBriefing } from './retriever-briefing.js';
 import { MODEL } from './model.js';
 import { MODEL_ID, RequestError, costMeta, freshInstanceId, tokensMeta } from './request.js';
 import { RESULT_TOOL, readStructuredReply } from './structured-result.js';
@@ -58,11 +59,18 @@ export async function runRetriever(payload: RetrieverPayload | undefined, runId:
   }
 
   banklog('retriever', `LLM init: ${MODEL}`, 'blue');
-  const indexToc = await collectIndexes(fsPath, { linesPerFile: 30 });
-  if (indexToc) {
-    banklog('retriever', `pre-injected ${indexToc.split('\n### ').length} _index.md file(s) into briefing`, 'blue');
+  const bankBriefing = await buildBankBriefing(fsPath, { role: 'retriever' });
+  banklog('retriever', `briefing: ${summarizeBriefing(bankBriefing)}`, 'blue');
+  for (const d of bankBriefing.diagnostics) {
+    banklog('retriever', `briefing ${d.code}: ${d.message}`, 'yellow');
   }
-  const briefing = buildBriefing(bank, question, fsPath, payload?.hint, indexToc);
+  const briefing = buildRetrieverBriefing({
+    bank,
+    question,
+    fsPath,
+    hint: payload?.hint,
+    bankBriefing: bankBriefing.text,
+  });
   banklog('retriever', `LLM call (prompt=${briefing.length}B)`, 'blue');
   const tLlm = Date.now();
   const instanceId = freshInstanceId('retriever', runId);
@@ -147,51 +155,4 @@ function normalizeReference(
     return { path: path.join(fsPath, p.replace(/^\/+/, '')), why: ref.why };
   }
   return { path: path.join(fsPath, p), why: ref.why };
-}
-
-function buildBriefing(
-  bank: string,
-  question: string,
-  fsPath: string,
-  hint: string | undefined,
-  indexToc: string,
-): string {
-  const parts: string[] = [];
-  parts.push(`# Retrieve from memory bank \`${bank}\``);
-  parts.push('');
-  parts.push('## Question');
-  parts.push(question);
-  parts.push('');
-  if (hint && hint.trim()) {
-    parts.push('## Hint from the caller');
-    parts.push(hint.trim());
-    parts.push('');
-  }
-  parts.push('## Sandbox details');
-  parts.push(
-    `Your tools see the bank mounted at \`/\`. The absolute host path of that root is:\n\n\`${fsPath}\`\n\nUse this prefix when building absolute paths for \`references\`. **Do not run \`pwd\`** — the path above is authoritative.`,
-  );
-  parts.push('');
-  if (indexToc) {
-    parts.push('## Index map (pre-loaded)');
-    parts.push(
-      "Top lines of every `_index.md` in the bank are included below so you don't need to `tree` or `cat _index.md` to orient. Each section header is the relative path of the index file. Use this as a navigation aid — open individual notes only when you need their content to answer the question.",
-    );
-    parts.push('');
-    parts.push(indexToc);
-    parts.push('');
-  }
-  parts.push('## Your job');
-  parts.push(
-    'Use your tools (`bash`, `read`, `grep`, `glob`) to find the answer to the question — strictly from the bank\'s contents. Cite every file you used in `references` with absolute paths. If nothing relevant exists in the bank, submit the exact "no data" answer described in your role instructions.',
-  );
-  parts.push('');
-  parts.push(
-    "**Write the `answer` field in English** — even if the question is in another language. A downstream agent will localize the final user-facing answer. Direct quotes from source files preserve their original language verbatim.",
-  );
-  parts.push('');
-  parts.push(
-    'You already have the index map above — go straight to the relevant folders/files. Do NOT modify the bank — reads, searches and listings only.',
-  );
-  return parts.join('\n');
 }
