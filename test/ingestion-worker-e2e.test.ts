@@ -60,6 +60,9 @@ after(async () => {
 
 test('queued text + url items reach a terminal status through the real ingest and Librarian', async () => {
   await fx.bankRegistry.create({ id: 'inbox' });
+  // A freshly created bank has no searchable revision: the scaffold commit is not one.
+  const fresh = await fx.completedRevisions.get('inbox');
+  assert.deepEqual([fresh.revision, fresh.by], [null, 'bootstrap']);
   const clock = new ManualClock();
   const store = new FakeIngestionStore(clock.now);
   const fetch = async (url: string) =>
