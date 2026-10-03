@@ -140,3 +140,21 @@ describe('tools over a sandbox', () => {
     assert.equal(r.details.exitCode, 0);
   });
 });
+
+describe('tool notes for the run log', () => {
+  test('read reports the page and range it returned; bash reports a cut', async () => {
+    const big = ('n'.repeat(99) + '\n').repeat(3000);
+    const env = {
+      readFile: async () => big,
+      exec: async () => ({ stdout: 'y\n'.repeat(10_000), stderr: '', exitCode: 0 }),
+    } as any;
+    const notes: string[] = [];
+    const read = createPagedReadTool(env, (m) => notes.push(m)) as any;
+    await read.execute('a', { path: '/big', page: 2 });
+    await read.execute('b', { path: '/big', page: 3 }).catch(() => {});
+    await (createHeadBashTool(env, (m) => notes.push(m)) as any).execute('c', { command: 'x' });
+    assert.equal(notes[0], '/big page 2/2 lines 2001–3000 (100 000 of 300 000 chars)');
+    assert.equal(notes[1], '/big page 3 of 2: does not exist');
+    assert.match(notes[2], /^\[Output cut: showed the first/);
+  });
+});

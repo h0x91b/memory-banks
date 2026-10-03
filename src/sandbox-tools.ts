@@ -154,7 +154,23 @@ const ReadParams = Type.Object({
   limit: Type.Optional(Type.Number({ description: 'Maximum number of lines to read' })),
 });
 
-export function createPagedReadTool(env: Sandbox): AgentToolLike {
+/** One line per tool result that was paged or cut, for the run log. */
+export type ToolNote = (message: string) => void;
+
+/** Describe what a `read` call returned: which page or line range, out of what. */
+export function describeRead(path: string, content: string, args: ReadArgs): string {
+  const pages = paginate(content);
+  const total = pages.length;
+  if (args.page !== undefined || (args.offset === undefined && args.limit === undefined)) {
+    const index = (args.page ?? 1) - 1;
+    const p = pages[index];
+    if (!p) return `${path} page ${args.page} of ${total}: does not exist`;
+    return `${path} page ${index + 1}/${total} lines ${p.firstLine}–${p.lastLine} (${fmt(p.end - p.start)} of ${fmt(content.length)} chars)`;
+  }
+  return `${path} lines from ${args.offset ?? 1}${args.limit ? ` limit ${args.limit}` : ''} (${fmt(content.length)} chars, ${total} page(s))`;
+}
+
+export function createPagedReadTool(env: Sandbox, note?: ToolNote): AgentToolLike {
   return {
     name: 'read',
     label: 'Read File',
@@ -166,6 +182,7 @@ export function createPagedReadTool(env: Sandbox): AgentToolLike {
     async execute(_toolCallId: string, params: { path: string; page?: number; offset?: number; limit?: number }, signal?: AbortSignal) {
       if (signal?.aborted) throw new Error('Operation aborted');
       const content = await env.readFile(params.path);
+      note?.(describeRead(params.path, content, params));
       const text = formatRead(params.path, content, params);
       return { content: [{ type: 'text', text }], details: { path: params.path, chars: content.length } };
     },
@@ -201,7 +218,7 @@ const BashParams = Type.Object({
   timeout: Type.Optional(Type.Number({ description: 'Timeout in seconds' })),
 });
 
-export function createHeadBashTool(env: Sandbox): AgentToolLike {
+export function createHeadBashTool(env: Sandbox, note?: ToolNote): AgentToolLike {
   return {
     name: 'bash',
     label: 'Run Command',
@@ -223,8 +240,11 @@ export function createHeadBashTool(env: Sandbox): AgentToolLike {
       try {
         const r = await env.exec(params.command, { timeoutMs, signal: execSignal });
         if (timeoutSignal?.aborted && !signal?.aborted) return timedOut();
+        const text = formatBashOutput(r.stdout, r.stderr, r.exitCode);
+        const cut = text.match(/\[Output cut: [^\]]*\]/);
+        if (cut) note?.(cut[0]);
         return {
-          content: [{ type: 'text', text: formatBashOutput(r.stdout, r.stderr, r.exitCode) }],
+          content: [{ type: 'text', text }],
           details: { ...details, exitCode: r.exitCode },
         };
       } catch (err) {
@@ -240,14 +260,14 @@ export function createHeadBashTool(env: Sandbox): AgentToolLike {
  * are the paged / head-keeping versions above. Removing this wrapper restores
  * Flue's defaults.
  */
-export function withPagedTools(factory: SandboxFactory): SandboxFactory {
+export function withPagedTools(factory: SandboxFactory, notes: { read?: ToolNote; bash?: ToolNote } = {}): SandboxFactory {
   return {
     ...factory,
     tools: (env) => [
-      createPagedReadTool(env),
+      createPagedReadTool(env, notes.read),
       createWriteTool(env),
       createEditTool(env),
-      createHeadBashTool(env),
+      createHeadBashTool(env, notes.bash),
       createGrepTool(env),
       createGlobTool(env),
     ],
