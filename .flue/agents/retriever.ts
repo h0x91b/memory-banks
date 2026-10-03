@@ -3,7 +3,7 @@ import { bash, useInitialData, useModel, useSandbox } from '@flue/runtime';
 import * as v from 'valibot';
 import roleDoc from '../roles/retriever.md';
 import { createBankBashFactory } from '../../src/bash-factory.js';
-import { MODEL, THINKING_LEVEL } from '../../src/model.js';
+import { MODEL, RETRIEVER_THINKING_LEVEL } from '../../src/model.js';
 import { roleInstructions } from '../../src/role.js';
 import { useStructuredResult } from '../../src/structured-result.js';
 
@@ -29,7 +29,7 @@ export const RetrieverInitSchema = v.object({
  */
 export function Retriever() {
   const { bank, fsPath } = useInitialData<v.InferOutput<typeof RetrieverInitSchema>>();
-  useModel(MODEL, { thinkingLevel: THINKING_LEVEL });
+  useModel(MODEL, { thinkingLevel: RETRIEVER_THINKING_LEVEL });
   useSandbox(bash(createBankBashFactory({ bank, bankFsPath: fsPath })));
   useStructuredResult(RetrieverResultSchema);
   return roleInstructions(roleDoc);
