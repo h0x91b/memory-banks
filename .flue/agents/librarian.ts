@@ -1,0 +1,33 @@
+'use agent';
+import { bash, useInitialData, useModel, useSandbox } from '@flue/runtime';
+import * as v from 'valibot';
+import roleDoc from '../roles/librarian.md';
+import { createBankBashFactory } from '../../src/bash-factory.js';
+import { MODEL, LIBRARIAN_THINKING_LEVEL } from '../../src/model.js';
+import { roleInstructions } from '../../src/role.js';
+import { useStructuredResult } from '../../src/structured-result.js';
+
+export const LibrarianResultSchema = v.object({
+  summary: v.string(),
+});
+
+export const LibrarianInitSchema = v.object({
+  bank: v.string(),
+  fsPath: v.string(),
+});
+
+/**
+ * Memory-bank librarian (formerly "curator"). One instance per request: the
+ * HTTP route (src/librarian.ts) ingests items, creates the instance with the
+ * bank as initialData, sends the briefing, then sweeps and commits around it.
+ */
+export function Librarian() {
+  const { bank, fsPath } = useInitialData<v.InferOutput<typeof LibrarianInitSchema>>();
+  useModel(MODEL, { thinkingLevel: LIBRARIAN_THINKING_LEVEL });
+  useSandbox(bash(createBankBashFactory({ bank, bankFsPath: fsPath })));
+  useStructuredResult(LibrarianResultSchema);
+  return roleInstructions(roleDoc);
+}
+
+Librarian.agentName = 'librarian';
+Librarian.initialData = LibrarianInitSchema;

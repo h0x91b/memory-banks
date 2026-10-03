@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "./scripts/with-env.sh vite dev --port ${PORT:-3583}",
+    "librarian": "./scripts/with-env.sh node scripts/run-cli.mjs librarian",
     "curator": "./scripts/with-env.sh node scripts/run-cli.mjs curator",
     "retriever": "./scripts/with-env.sh node scripts/run-cli.mjs retriever",
     "build": "vite build",

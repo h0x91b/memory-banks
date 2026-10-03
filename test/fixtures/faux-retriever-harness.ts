@@ -7,7 +7,7 @@
 import { init } from '@flue/runtime';
 import { start } from '@flue/runtime/node';
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
-import { Curator } from '../../.flue/agents/curator.js';
+import { Librarian } from '../../.flue/agents/librarian.js';
 import { Retriever, RetrieverResultSchema } from '../../.flue/agents/retriever.js';
 import { MODEL } from '../../src/model.js';
 import { runRetriever } from '../../src/retriever.js';
@@ -22,7 +22,7 @@ export const faux = fauxProvider({
 export { fauxAssistantMessage, fauxToolCall, runRetriever };
 
 export async function startFlue() {
-  return start({ agents: [Curator, Retriever], providers: [faux.provider] });
+  return start({ agents: [Librarian, Retriever], providers: [faux.provider] });
 }
 
 /** Run the bare agent with a given briefing — no telemetry subscriber. */

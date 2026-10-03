@@ -1,5 +1,5 @@
 import { Hono, type Context } from 'hono';
-import { runCurator } from '../src/curator.js';
+import { runLibrarian } from '../src/librarian.js';
 import { runRetriever } from '../src/retriever.js';
 import { RequestError } from '../src/request.js';
 
@@ -23,7 +23,10 @@ async function handle(c: Context, run: (payload: any, runId: string) => Promise<
   }
 }
 
-app.post('/agents/curator/:id', (c) => handle(c, runCurator));
+app.post('/agents/librarian/:id', (c) => handle(c, runLibrarian));
+// Deprecated alias kept for existing clients after the curator → librarian
+// rename: same handler, same single run per request. Remove once clients move.
+app.post('/agents/curator/:id', (c) => handle(c, runLibrarian));
 app.post('/agents/retriever/:id', (c) => handle(c, runRetriever));
 
 export default app;

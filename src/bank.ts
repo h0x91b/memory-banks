@@ -52,7 +52,7 @@ export async function ensureBank(bank: string): Promise<EnsureBankResult> {
   if (!existsSync(indexPath)) {
     await fs.writeFile(
       indexPath,
-      `# ${bank}\n\nMemory bank index. Curated automatically by the curator agent.\n`,
+      `# ${bank}\n\nMemory bank index. Curated automatically by the librarian agent.\n`,
     );
   }
 
