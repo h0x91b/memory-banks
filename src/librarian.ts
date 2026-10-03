@@ -9,6 +9,7 @@ import {
   toIngestSource,
   type IngestProvenance,
 } from './ingest-provenance.ts';
+import { formatCallerHintsForBriefing, type BriefingCallerHint } from './caller-hints.ts';
 import { gitCommitAll, gitEnsureRepo } from './git.js';
 import { readGitChanges, type Change } from './changes.js';
 import { sweepRawToUnsorted } from './sweep.js';
@@ -42,6 +43,8 @@ export interface LibrarianPayload {
 export interface LibrarianRunContext {
   provenance?: Array<{ rawName: string; source: unknown }>;
   ingestCommit?: string | null;
+  /** Per-request caller hints of queued ingestions, each tied to its own raw files. */
+  callerHints?: BriefingCallerHint[];
 }
 
 export async function runLibrarian(
@@ -115,7 +118,12 @@ export async function runLibrarian(
   for (const d of bankBriefing.diagnostics) {
     banklog('briefing', `  [${d.code}] ${d.message}`, 'yellow');
   }
-  const provenanceSection = briefingProvenance(rawEntries, ingested, ingestCommit, context);
+  const provenanceSection = [
+    briefingProvenance(rawEntries, ingested, ingestCommit, context),
+    formatCallerHintsForBriefing(context.callerHints ?? [], topLevelRawFiles(rawEntries)),
+  ]
+    .filter(Boolean)
+    .join('\n\n');
   const briefing = buildBriefing(bank, rawEntries, rawFileCount, payload?.hint, bankBriefing.text, provenanceSection);
   banklog('librarian', `LLM call (prompt=${briefing.length}B, raw_entries=${rawEntries.length}, raw_files=${rawFileCount})`, 'blue');
   const tLlm = Date.now();
@@ -312,10 +320,14 @@ function briefingProvenance(
   ownCommit: string | null,
   context: LibrarianRunContext,
 ): string {
-  const present = new Set(rawEntries.filter((e) => e.kind === 'file').map((e) => e.name));
+  const present = topLevelRawFiles(rawEntries);
   const fromCaller = (context.provenance ?? []).map((p) => ({ rawName: p.rawName, source: toIngestSource(p.source) }));
   const entries = [...fromCaller, ...ownEntries].filter((p) => present.has(p.rawName));
   return formatProvenanceForBriefing(entries, ownCommit ?? context.ingestCommit ?? null);
+}
+
+function topLevelRawFiles(rawEntries: RawEntry[]): Set<string> {
+  return new Set(rawEntries.filter((e) => e.kind === 'file').map((e) => e.name));
 }
 
 function buildBriefing(

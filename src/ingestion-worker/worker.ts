@@ -81,15 +81,25 @@ export interface CurateContext {
   provenance: Array<{ rawName: string; source: unknown }>;
   /** Short sha of this batch's ingest commit, null when nothing new was ingested. */
   ingestCommit: string | null;
+  /**
+   * One entry per batched request that carried a hint, in batch order, each
+   * tied to the raw files of its own items, so one caller's context never
+   * reads as applying to another's material.
+   */
+  callerHints: CallerHint[];
+}
+
+export interface CallerHint {
+  requestId: string;
+  hint: string;
+  /** Names in fs/_raw/ of the request's items ingested in this attempt. */
+  rawNames: string[];
+  /** Items ingested by an earlier, interrupted attempt; their raw names were not recorded. */
+  unlistedFiles: number;
 }
 
 /** Runs the Librarian over whatever sits in the bank's fs/_raw/. */
-export type CurateFn = (
-  bank: string,
-  runId: string,
-  hint: string | undefined,
-  ctx: CurateContext,
-) => Promise<CurateResult>;
+export type CurateFn = (bank: string, runId: string, ctx: CurateContext) => Promise<CurateResult>;
 /** Original descriptor of a spooled item, so ingest can record provenance instead of the spool path. */
 export interface IngestOrigin {
   kind: QueuedItem['kind'];
@@ -377,24 +387,31 @@ export class IngestionWorker {
     const staging = await fs.mkdtemp(path.join(os.tmpdir(), 'mb-ingest-'));
     const trailers: string[] = [];
     const entries: Array<{ rawName: string; source: unknown }> = [];
+    const callerHints: CallerHint[] = [];
     let ingestedNow = 0;
     let anyIngested = false;
     try {
       for (const r of live) {
         const items: ItemOutcome[] = [];
+        const hint = requestHint(r);
+        const rawNames: string[] = [];
+        let unlistedFiles = 0;
         for (const item of r.items) {
           if (isLost()) break;
           const key = `${r.id}/${item.index}`;
           const source = itemSource(item);
           if (already.has(key)) {
             items.push({ index: item.index, status: 'succeeded', replayed: true, ...(source ? { source } : {}) });
+            unlistedFiles++;
             anyIngested = true;
             continue;
           }
           try {
             const { input, origin } = await this.materialize(claim, r, item, staging);
             const res = await this.o.ingest(bank, input, { origin });
-            entries.push({ rawName: res.rawName ?? path.basename(res.rawPath), source: res.source ?? origin });
+            const rawName = res.rawName ?? path.basename(res.rawPath);
+            entries.push({ rawName, source: res.source ?? origin });
+            rawNames.push(rawName);
             const rawPath = path.relative(bankFsPath(bank), res.rawPath).split(path.sep).join('/');
             items.push({ index: item.index, status: 'succeeded', rawPath, ...(source ? { source } : {}) });
             trailers.push(`Ingestion-Item: ${key}`);
@@ -408,6 +425,9 @@ export class IngestionWorker {
               ...(source ? { source } : {}),
             });
           }
+        }
+        if (hint && (rawNames.length || unlistedFiles)) {
+          callerHints.push({ requestId: r.id, hint, rawNames, unlistedFiles });
         }
         outcomes.set(r.id, { requestId: r.id, batchId, commits: [], revision: null, items });
       }
@@ -430,8 +450,7 @@ export class IngestionWorker {
     let runError: { code: string; message: string } | null = null;
     if (anyIngested && !isLost()) {
       try {
-        const hint = live.map((r) => metaString(r, 'hint')?.trim()).filter(Boolean).join('\n\n') || undefined;
-        const res = await this.o.curate(bank, batchId, hint, { provenance: entries, ingestCommit });
+        const res = await this.o.curate(bank, batchId, { provenance: entries, ingestCommit, callerHints });
         commits.push(...res.commits);
       } catch (err) {
         runError = { code: 'curate_failed', message: errorMessage(err) };
@@ -543,9 +562,11 @@ function defaultIngestCommit(entries: Array<{ rawName: string }>, opts: { traile
   return [`ingest: ${entries.length} item(s) into fs/_raw/`, '', ...opts.trailers].join('\n');
 }
 
-function metaString(r: QueuedRequest, key: string): string | undefined {
-  const v = r.metadata?.[key];
-  return typeof v === 'string' && v ? v : undefined;
+/** The request's top-level hint; a legacy `metadata.hint` string only when it has none. */
+function requestHint(r: QueuedRequest): string | undefined {
+  const legacy = r.metadata?.hint;
+  const hint = typeof r.hint === 'string' ? r.hint : typeof legacy === 'string' ? legacy : '';
+  return hint.trim() || undefined;
 }
 
 /** Public provenance for an item outcome; a URL is redacted (the stored descriptor keeps the real one). */

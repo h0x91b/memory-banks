@@ -41,8 +41,8 @@ export function createIngestionWorker(
         entries.map((e) => ({ rawName: e.rawName, source: toIngestSource(e.source) })),
         opts,
       ),
-    curate: async (bank, runId, hint, ctx) => {
-      const res = await runLibrarian({ bank, items: [], ...(hint ? { hint } : {}) }, runId, ctx);
+    curate: async (bank, runId, ctx) => {
+      const res = await runLibrarian({ bank, items: [] }, runId, ctx);
       return { commits: res.commits, summary: res.summary };
     },
     bankStatus: (bank) => banks.lookup(bank),

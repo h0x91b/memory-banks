@@ -14,6 +14,7 @@ import { Hono } from 'hono';
 
 import { BankRegistry, createBanksRouter } from '../src/banks/index.ts';
 import { IngestionClaimLost, IngestionStore, createIngestionsRouter } from '../src/ingestions/index.ts';
+import { canonicalJson } from '../src/ingestions/store.ts';
 
 const run = promisify(execFile);
 const FIXTURE = path.join(import.meta.dirname, 'fixtures', 'ingestion-process.ts');
@@ -258,6 +259,95 @@ test('restart: queued request, idempotency and history survive a new process', a
   assert.equal(c.status, 409);
   const list = await child('list', 'notes');
   assert.deepEqual(list.body.ingestions.map((i: any) => [i.id, i.status]), [[a.body.id, 'queued']]);
+});
+
+// ---- caller hint -------------------------------------------------------------------
+
+test('hint: JSON and multipart hints are trimmed, stored, shown, and claimed with their request', async () => {
+  const json = await post({ hint: '  receipts from the Lisbon trip, for taxes \n', items: [{ type: 'text', text: 'r1' }] });
+  assert.equal(json.status, 202, JSON.stringify(json.body));
+  const form = new FormData();
+  form.append('text', 'loose note');
+  form.append('hint', 'draft ideas, not decisions');
+  const multi = await send('POST', '/v1/banks/notes/ingestions', { body: form });
+  assert.equal(multi.status, 202, JSON.stringify(multi.body));
+  const none = await post({ hint: '   ', items: [{ type: 'text', text: 'plain' }] });
+  const nul = await post({ hint: null, items: [{ type: 'text', text: 'plain2' }] });
+  const atMax = await post({ hint: 'é'.repeat(4000), items: [{ type: 'text', text: 'max' }] });
+  assert.equal(atMax.status, 202, 'exactly 4000 characters (not bytes) is accepted');
+
+  assert.equal((await send('GET', json.body.status_url)).body.hint, 'receipts from the Lisbon trip, for taxes');
+  assert.equal((await send('GET', multi.body.status_url)).body.hint, 'draft ideas, not decisions');
+  for (const id of [none.body.id, nul.body.id]) {
+    const got = (await send('GET', `/v1/banks/notes/ingestions/${id}`)).body;
+    assert.ok(!('hint' in got), 'no hint -> field omitted');
+    const stored = JSON.parse(await fs.readFile(path.join(reqDir('notes', id), 'request.json'), 'utf8'));
+    assert.ok(!('hint' in stored), 'no hint -> not written to request.json');
+  }
+
+  const claim = await store.claimBatch({ bank: 'notes', workerId: 'w', leaseMs: 60_000 });
+  assert.deepEqual(
+    claim!.requests.map((r) => r.hint ?? null),
+    ['receipts from the Lisbon trip, for taxes', 'draft ideas, not decisions', null, null, 'é'.repeat(4000)],
+  );
+});
+
+test('hint: malformed, oversized and duplicate hints are 400 and store nothing', async () => {
+  const items = [{ type: 'text', text: 'x' }];
+  for (const hint of [42, true, ['a'], { text: 'a' }, 'x'.repeat(4001), `  ${'x'.repeat(4001)}  `]) {
+    const res = await post({ hint, items });
+    assertError(res, 400, 'validation_error');
+    assert.equal(res.body.error.details.field, 'hint');
+  }
+  const twice = new FormData();
+  twice.append('text', 'x');
+  twice.append('hint', 'one');
+  twice.append('hint', 'two');
+  assertError(await send('POST', '/v1/banks/notes/ingestions', { body: twice }), 400, 'validation_error');
+  const asFile = new FormData();
+  asFile.append('text', 'x');
+  asFile.append('hint', new File(['context'], 'hint.txt', { type: 'text/plain' }));
+  assertError(await send('POST', '/v1/banks/notes/ingestions', { body: asFile }), 400, 'validation_error');
+  const long = new FormData();
+  long.append('text', 'x');
+  long.append('hint', 'y'.repeat(4001));
+  assertError(await send('POST', '/v1/banks/notes/ingestions', { body: long }), 400, 'validation_error');
+
+  assert.equal((await store.list('notes')).ingestions.length, 0);
+  assert.deepEqual(await registry.listDurableWork('notes'), []);
+});
+
+test('hint: part of the Idempotency-Key fingerprint; no hint keeps the pre-hint fingerprint', async () => {
+  const items = [{ type: 'text', text: 'same bytes' }];
+  const first = await post({ hint: 'tax receipts', items }, { 'Idempotency-Key': 'h-1' });
+  assert.equal(first.status, 202);
+  const sameAfterTrim = await post({ hint: '  tax receipts ', items }, { 'Idempotency-Key': 'h-1' });
+  assert.equal(sameAfterTrim.body.id, first.body.id, 'normalized hint replays');
+  assert.equal(sameAfterTrim.headers.get('idempotent-replayed'), 'true');
+  const otherIntent = await post({ hint: 'medical receipts', items }, { 'Idempotency-Key': 'h-1' });
+  assertError(otherIntent, 409, 'idempotency_conflict');
+  assert.equal(otherIntent.body.error.details.ingestionId, first.body.id);
+  assertError(await post({ items }, { 'Idempotency-Key': 'h-1' }), 409, 'idempotency_conflict');
+
+  const plain = await post({ items }, { 'Idempotency-Key': 'h-2' });
+  assert.equal((await post({ hint: ' ', items }, { 'Idempotency-Key': 'h-2' })).body.id, plain.body.id, 'blank = none');
+  const stored = JSON.parse(await fs.readFile(path.join(reqDir('notes', plain.body.id), 'request.json'), 'utf8'));
+  const preHint = sha(
+    canonicalJson({
+      metadata: null,
+      items: [{ kind: 'text', sha256: sha('same bytes'), filename: null, mediaType: 'text/plain', url: null, metadata: null }],
+    }),
+  );
+  assert.equal(stored.fingerprint, preHint, 'keys stored before hints existed still replay');
+});
+
+test('hint: survives a restart and reaches a claim made by another process', async () => {
+  const a = await child('post', 'notes', 'from process A', '  prep for Monday  ');
+  assert.equal(a.status, 202, JSON.stringify(a.body));
+  const replay = await child('post', 'notes', 'from process A', 'prep for Monday');
+  assert.equal(replay.body.id, a.body.id, 'replayed after restart');
+  assert.equal((await child('post', 'notes', 'from process A', 'other purpose')).status, 409);
+  assert.deepEqual(await child('claim-hints', 'notes'), [{ id: a.body.id, hint: 'prep for Monday' }]);
 });
 
 // ---- archive retention --------------------------------------------------------------

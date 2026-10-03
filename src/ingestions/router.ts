@@ -24,13 +24,15 @@ export const MAX_FILE_BYTES = 25 * 1024 * 1024;
 export const MAX_METADATA_BYTES = 16 * 1024;
 export const MAX_URL_LENGTH = 2048;
 export const MAX_FILENAME_LENGTH = 200;
+/** Same bound as the query `hint` (src/query/service.ts), counted in characters after trimming. */
+export const MAX_HINT_LENGTH = 4000;
 export const LIST_LIMIT_DEFAULT = 50;
 export const LIST_LIMIT_MAX = 100;
 
-const JSON_KEYS = new Set(['items', 'metadata']);
+const JSON_KEYS = new Set(['items', 'metadata', 'hint']);
 const TEXT_ITEM_KEYS = new Set(['type', 'text', 'filename', 'mediaType', 'metadata']);
 const URL_ITEM_KEYS = new Set(['type', 'url', 'filename', 'metadata']);
-const MULTIPART_FIELDS = new Set(['file', 'text', 'url', 'metadata']);
+const MULTIPART_FIELDS = new Set(['file', 'text', 'url', 'metadata', 'hint']);
 const STATUS_FILTERS: readonly (IngestionStatus | 'all')[] = [...INGESTION_STATUSES, 'all'];
 // Visible ASCII, as most Idempotency-Key implementations accept.
 const IDEMPOTENCY_KEY_RE = /^[\x21-\x7e]{1,255}$/;
@@ -72,8 +74,8 @@ export function createIngestionsRouter(
             { bank, status: state },
           );
         }
-        const { items, metadata } = await readPayload(c);
-        const { record, replayed } = await store.accept({ bank, items, metadata, idempotencyKey });
+        const { items, metadata, hint } = await readPayload(c);
+        const { record, replayed } = await store.accept({ bank, items, metadata, hint, idempotencyKey });
         const statusUrl = `/v1/banks/${bank}/ingestions/${record.id}`;
         c.header('Location', statusUrl);
         if (replayed) c.header('Idempotent-Replayed', 'true');
@@ -180,6 +182,8 @@ function readIdempotencyKey(c: Context): string | null {
 interface Payload {
   items: NewItem[];
   metadata: Record<string, unknown> | null;
+  /** Trimmed caller hint; null when absent or blank. */
+  hint: string | null;
 }
 
 async function readPayload(c: Context): Promise<Payload> {
@@ -205,7 +209,7 @@ async function readJsonPayload(c: Context): Promise<Payload> {
   }
   if (body.items.length > MAX_ITEMS) throw invalid('items', `items may hold at most ${MAX_ITEMS} entries`);
   const items = body.items.map((raw, i) => readJsonItem(raw, i));
-  return { items, metadata: readMetadata(body.metadata, 'metadata') };
+  return { items, metadata: readMetadata(body.metadata, 'metadata'), hint: readHint(body.hint, 'hint') };
 }
 
 function readJsonItem(raw: unknown, i: number): NewItem {
@@ -292,7 +296,11 @@ async function readMultipartPayload(c: Context): Promise<Payload> {
     }
     metadata = readMetadata(parsed, 'metadata');
   }
-  return { items, metadata };
+
+  const hintParts = all('hint');
+  if (hintParts.length > 1) throw invalid('hint', 'hint may be sent once');
+  if (hintParts.length === 1 && typeof hintParts[0] !== 'string') throw invalid('hint', 'hint must be a text field');
+  return { items, metadata, hint: readHint(hintParts[0], 'hint') };
 }
 
 // ---- field validators -----------------------------------------------------------
@@ -304,6 +312,15 @@ function readMetadata(value: unknown, field: string): Record<string, unknown> | 
     throw invalid(field, `${field} exceeds ${MAX_METADATA_BYTES} bytes as JSON`);
   }
   return value;
+}
+
+/** Caller context for the Librarian: optional string, trimmed; blank counts as absent. */
+function readHint(value: unknown, field: string): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') throw invalid(field, `${field} must be a string`);
+  const hint = value.trim();
+  if ([...hint].length > MAX_HINT_LENGTH) throw invalid(field, `${field} must be at most ${MAX_HINT_LENGTH} characters`);
+  return hint || null;
 }
 
 function readUrl(value: unknown, field: string): string {

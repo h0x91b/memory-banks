@@ -16,6 +16,7 @@ The bank must exist and be `active`. Two body formats.
 
 ```json
 {
+  "hint": "Standup notes from the payments team; the launch dates matter most",
   "metadata": { "source": "slack" },
   "items": [
     { "type": "text", "text": "# Standup\n...", "filename": "standup.md", "mediaType": "text/markdown", "metadata": {} },
@@ -33,6 +34,7 @@ The bank must exist and be `active`. Two body formats.
 | `filename` | Optional plain name, 1–200 chars, no `/`, `\`, control characters, not `.`/`..` |
 | `mediaType` | Optional for `text`, like `text/markdown`; default `text/plain` |
 | `metadata` | Optional JSON object on the request and on each item, at most 16 KiB as JSON. Stored as given |
+| `hint` | Optional string on the request: your context or purpose for this material, for the Librarian. See § Caller hint |
 
 Unknown fields anywhere → `400 validation_error`.
 
@@ -44,9 +46,28 @@ Unknown fields anywhere → `400 validation_error`.
 | `text` | yes | a `text` item, `text/plain` |
 | `url` | yes | a `url` item, same rules as JSON |
 | `metadata` | once | JSON object string → request metadata |
+| `hint` | once | text field → request `hint`, same rules as JSON. A second `hint` part or a file part named `hint` → `400` |
 
 Images are plain `file` parts (`image/png`, `image/jpeg`, ...). Item order is: all files, then texts, then urls.
 Per-item metadata is JSON-only. Other part names → `400 validation_error`.
+
+### Caller hint
+
+`hint` tells the Librarian why you are sending this material, e.g. `"receipts from the Lisbon trip, for the 2026 tax
+return"`. Optional in both formats.
+
+| Rule | Detail |
+|---|---|
+| Type | String. `null`, absent, or only whitespace = no hint. Any other type → `400 validation_error`, `details.field: "hint"` |
+| Normalization | Leading/trailing whitespace trimmed before storing, comparing and showing |
+| Length | At most 4000 characters after trimming (same bound as the query `hint`) |
+| Storage | In `request.json` and the status resource as `hint`; the field is **omitted** when there is no hint |
+| Idempotency | Part of the payload: a repeat with a different hint is `409 idempotency_conflict`. A request without a hint keeps the fingerprint it had before hints existed |
+| Batching | Requests batched into one Librarian run keep their own hints: each is shown with the raw files of its own items only |
+| Meaning | Shown to the Librarian as caller context for placement — not as an instruction that overrides its rules, and not as a source of facts to write into the bank |
+
+A string `metadata.hint` (the older, undocumented convention) is still passed on the same way, but only for a
+request without a top-level `hint`. New callers should use `hint`.
 
 ### Limits that apply to both
 
@@ -75,7 +96,7 @@ Optional header, 1–255 visible ASCII characters, scoped **per bank**.
 | Different payload | `409 idempotency_conflict`, `details.ingestionId` names the original |
 | Same key on another bank | Independent; a new request |
 
-"Same payload" = same request metadata and same items in the same order: type, content hash, filename, media type,
+"Same payload" = same request metadata, same trimmed `hint` and same items in the same order: type, content hash, filename, media type,
 URL, item metadata. Concurrent identical repeats create exactly one request; keys survive restarts. Keys never expire.
 
 ### Errors
@@ -107,6 +128,7 @@ URL, item metadata. Concurrent identical repeats create exactly one request; key
   "attempts": 0,
   "idempotencyKey": "k-1",
   "metadata": { "source": "slack" },
+  "hint": "Standup notes from the payments team; the launch dates matter most",
   "items": [
     { "index": 0, "kind": "text", "filename": "standup.md", "mediaType": "text/markdown", "size": 24,
       "sha256": "…", "url": null, "metadata": null, "status": "queued", "error": null },
@@ -132,6 +154,8 @@ stored. The worker and `Idempotency-Key` matching use the real URL.
 | `succeeded` | Every item succeeded |
 | `partial` | Some items succeeded, some failed — see `items[].error` |
 | `failed` | No item succeeded; `error` may hold a request-level reason |
+
+`hint` is present only when the request carried one.
 
 Item `status`: `queued`, `running`, `succeeded`, `failed`; a failed item carries `error: {code, message}`.
 `revision` is the bank revision (git commit) the worker produced, `null` until completed. `commits` lists the
@@ -208,6 +232,8 @@ reapExpired(now?): Promise<number>;                                         // e
 recoverAll(): Promise<void>;
 ```
 
+- Each claimed request carries `metadata` and, when it has one, `hint`; the worker hands hints to the Librarian per
+  request (`docs/design/ingestion-worker.md`).
 - `complete` derives the request status from item outcomes, stores `revision`, `commits` (optional, at most 50
   hex shas) and `error`, and releases the holds. A malformed `commits` rejects the whole call before anything is written.
 - A stale token (lease reaped, or already completed) gets `IngestionClaimLost` (`code: 'claim_lost'`) everywhere.

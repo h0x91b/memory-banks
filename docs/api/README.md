@@ -42,8 +42,12 @@ curl -s -X POST localhost:47823/v1/banks/family-notes/ingestions \
   -d '{"items":[{"type":"text","text":"# Standup\nLaunch moved to 14 Oct.","filename":"standup.md","mediaType":"text/markdown"}]}'
 
 curl -s -X POST localhost:47823/v1/banks/family-notes/ingestions \
-  -F file=@receipt.pdf -F file=@whiteboard.png -F url=https://example.com/post
+  -F file=@receipt.pdf -F file=@whiteboard.png -F url=https://example.com/post \
+  -F 'hint=Receipts from the Lisbon trip, for the 2026 tax return'
 ```
+
+`hint` (optional, both formats) tells the Librarian why you sent this material; it applies to that request's own
+items only.
 
 Retrying with the same `Idempotency-Key` and the same payload returns the same request id
 (`Idempotent-Replayed: true`); the same key with a different payload is `409 idempotency_conflict`.

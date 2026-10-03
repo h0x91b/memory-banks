@@ -132,6 +132,8 @@ and commits via real git from the host side.
   bank, batch claim, per-item ingest, one Librarian run, results with commits
   and revision; at-least-once with lease recovery
   (`docs/design/ingestion-worker.md`).
+- `src/caller-hints.ts` — renders queued requests' caller `hint`s into the
+  Librarian briefing, each tied to its own raw files, as caller context.
 - `src/log-types.ts` — minimal `FlueLogger` interface for util modules
   that don't want to import the whole SDK type bundle.
 - `scripts/with-env.sh` — loads `.env` and falls back to `$OPENROUTER_FLUE`
