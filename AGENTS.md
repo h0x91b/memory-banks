@@ -116,8 +116,8 @@ and commits via real git from the host side.
 - `src/changes.ts` — parse `git status --porcelain` output and strip the
   `fs/` prefix so reports talk in agent-side paths.
 - `src/sweep.ts` — move leftover `fs/_raw/` files into `fs/_unsorted/`.
-- `src/bank-mutation.ts` — one writer per bank (in-process chain + lock file
-  `<root>/.locks/<bank>.lock`) for the legacy/CLI Librarian and the ingestion
+- `src/bank-mutation.ts` — one writer per bank (in-process chain + generation
+  lock files `<root>/.locks/<bank>/`) for the legacy/CLI Librarian and the ingestion
   worker; records the last completed revision in `<root>/.revisions/<bank>.json`.
 - `src/ingestion-worker/` — processes queued ingestions: fixed 60s window per
   bank, batch claim, per-item ingest, one Librarian run, results with commits
@@ -291,7 +291,9 @@ For production-style serving (skills, manual testing) use `npm run serve`, then 
 
 ## Constraints / non-goals (v1)
 
-- Single-threaded — no locks; concurrent calls to the same bank may race.
+- One Librarian writer per bank (`src/bank-mutation.ts`) for one server per
+  root plus CLI runs on one filesystem; not a multi-host lock. Retriever runs
+  take no bank lock.
 - Local git only — no remote pushes.
 - Retriever read-only enforcement is by convention only — the sandbox is
   read/write, so a misbehaving run could mutate files. We detect it via

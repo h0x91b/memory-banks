@@ -7,7 +7,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createServer, createServerModuleRunner, type ViteDevServer } from 'vite';
@@ -110,5 +110,7 @@ test('queued text + url items reach a terminal status through the real ingest an
   const after = await fx.completedRevisions.get('inbox');
   assert.equal(after.by, 'legacy');
   assert.equal(after.revision, git('inbox', 'rev-parse', 'HEAD'));
-  assert.ok(!existsSync(path.join(bankRoot, '.locks', 'inbox.lock')), 'lock released');
+  const gens = readdirSync(path.join(bankRoot, '.locks', 'inbox')).filter((n) => n.endsWith('.json'));
+  assert.equal(gens.length, 1, 'only the top generation is kept');
+  assert.equal(JSON.parse(readFileSync(path.join(bankRoot, '.locks', 'inbox', gens[0]), 'utf8')).released, true, 'lock released');
 });

@@ -5,13 +5,12 @@
 // two layers deep:
 //   - in-process: a promise chain per bank, so two requests in the server
 //     never interleave;
-//   - cross-process: an O_EXCL lock file `<root>/.locks/<bank>.lock` holding
+//   - cross-process: generation files under `<root>/.locks/<bank>/` holding
 //     the owner's pid, so `npm run librarian` in another process waits for the
-//     server's run (and vice versa). A lock file whose pid is gone is stale and
-//     is reclaimed.
-// Supported mode is one server per MEMORY_BANK_ROOT (plus occasional CLI
-// runs). Stale-lock reclaim has a small window where two reclaimers race; it
-// is not a distributed lock.
+//     server's run (and vice versa). A holder whose pid is gone is stale and is
+//     superseded by the next generation (see the cross-process section).
+// Supported mode is one server per MEMORY_BANK_ROOT (plus CLI runs) on one
+// local filesystem; it is not a multi-host lock.
 //
 // Completed revision: when the holder calls `markCompleted`, the bank's full
 // HEAD sha is written to `<root>/.revisions/<bank>.json`. Intermediate commits
@@ -99,15 +98,61 @@ export function bankMutationBusy(bank: string): boolean {
 }
 
 // ---- cross-process layer ----------------------------------------------------
+//
+// Generation files: `<root>/.locks/<bank>/<generation>.json`, the generation
+// a zero-padded counter. Ownership = having CREATED the highest generation
+// while the one before it was dead (released, or its pid gone). A stale lock
+// is never deleted to be reclaimed; it is superseded by creating the next
+// generation, and creation is atomic and exclusive (`link(2)` of a fully
+// written temp file, EEXIST if taken). Two reclaimers of the same stale
+// generation g both try to create g+1: exactly one succeeds.
+//
+// Invariants that make this safe:
+//   1. Only the creator writes its generation file, and only to replace it
+//      with a `released` tombstone (atomic rename). The highest generation is
+//      never deleted, so the maximum only ever grows.
+//   2. A generation is created only after reading that the then-highest one
+//      is dead.
+//   3. After creating g, the creator lists the directory again; if anything
+//      higher exists it lost (its view was stale), deletes its own g and
+//      retries. Lower generations are dead by (2) and are swept by the owner.
+// So at most one live owner exists at any time. Liveness relies on pid checks
+// (a recycled pid looks alive: the lock then waits, it never double-grants).
 
 interface LockFile {
   pid: number;
   token: string;
   acquiredAt: string;
+  released?: boolean;
 }
 
-function lockFile(bank: string): string {
-  return path.join(bankRoot(), LOCKS_DIR, `${bank}.lock`);
+interface HeldLock {
+  generation: number;
+  token: string;
+}
+
+const GEN_WIDTH = 12;
+
+function lockDir(bank: string): string {
+  return path.join(bankRoot(), LOCKS_DIR, bank);
+}
+
+function genFile(bank: string, generation: number): string {
+  return path.join(lockDir(bank), `${String(generation).padStart(GEN_WIDTH, '0')}.json`);
+}
+
+async function generations(bank: string): Promise<number[]> {
+  let names: string[];
+  try {
+    names = await fs.readdir(lockDir(bank));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw err;
+  }
+  return names
+    .filter((n) => /^\d+\.json$/.test(n))
+    .map((n) => Number(n.slice(0, -5)))
+    .sort((a, b) => a - b);
 }
 
 function pidAlive(pid: number): boolean {
@@ -119,43 +164,76 @@ function pidAlive(pid: number): boolean {
   }
 }
 
-async function acquireFileLock(bank: string): Promise<string> {
-  const file = lockFile(bank);
-  await fs.mkdir(path.dirname(file), { recursive: true });
+function lockAlive(lock: LockFile | null | 'missing'): boolean {
+  if (lock === 'missing') return false;
+  if (!lock || lock.released) return false;
+  // Our own pid but no live handle: leaked by a crashed run in this process.
+  if (lock.pid === process.pid) return HELD.has(lock.token);
+  return pidAlive(lock.pid);
+}
+
+async function acquireFileLock(bank: string): Promise<HeldLock> {
+  const dir = lockDir(bank);
+  await fs.mkdir(dir, { recursive: true });
   const token = randomUUID();
   const body: LockFile = { pid: process.pid, token, acquiredAt: new Date().toISOString() };
   for (;;) {
+    const gens = await generations(bank);
+    const top = gens.at(-1) ?? 0;
+    if (top) {
+      const holder = await readLock(genFile(bank, top));
+      if (holder === 'missing') continue; // listing went stale under us: look again
+      if (lockAlive(holder)) {
+        await new Promise((r) => setTimeout(r, LOCK_POLL_MS));
+        continue;
+      }
+    }
+    const generation = top + 1;
+    const mine = genFile(bank, generation);
+    const tmp = path.join(dir, `.${token}.tmp`);
+    await fs.writeFile(tmp, `${JSON.stringify(body)}\n`);
     try {
-      await fs.writeFile(file, `${JSON.stringify(body)}\n`, { flag: 'wx' });
-      HELD.add(token);
-      return token;
+      await fs.link(tmp, mine);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+      continue; // someone else created this generation first
+    } finally {
+      await fs.rm(tmp, { force: true });
     }
-    const current = await readLock(file);
-    const stale =
-      !current || // unreadable or half-written by a crashed writer
-      (current.pid === process.pid ? !HELD.has(current.token) : !pidAlive(current.pid));
-    if (stale) {
-      // Only remove the exact file we judged stale.
-      const again = await readLock(file);
-      if (!current || (again && again.token === current.token)) await fs.rm(file, { force: true });
+    const after = await generations(bank);
+    if ((after.at(-1) ?? 0) > generation) {
+      // Our view was stale: a newer generation exists. Not the top, so ours may go.
+      await fs.rm(mine, { force: true });
       continue;
     }
-    await new Promise((r) => setTimeout(r, LOCK_POLL_MS));
+    HELD.add(token);
+    for (const g of after) if (g < generation) await fs.rm(genFile(bank, g), { force: true });
+    return { generation, token };
   }
 }
 
-async function releaseFileLock(bank: string, token: string): Promise<void> {
-  HELD.delete(token);
-  const file = lockFile(bank);
+async function releaseFileLock(bank: string, held: HeldLock): Promise<void> {
+  HELD.delete(held.token);
+  const file = genFile(bank, held.generation);
   const current = await readLock(file);
-  if (current?.token === token) await fs.rm(file, { force: true });
+  if (current === 'missing' || current?.token !== held.token) return;
+  // Tombstone, not delete: the top generation must stay so the counter never goes back.
+  const tmp = path.join(lockDir(bank), `.${held.token}.release.tmp`);
+  await fs.writeFile(tmp, `${JSON.stringify({ ...current, released: true })}\n`);
+  await fs.rename(tmp, file);
 }
 
-async function readLock(file: string): Promise<LockFile | null> {
+/** 'missing' when the file is gone; null when it cannot be parsed (counts as dead). */
+async function readLock(file: string): Promise<LockFile | null | 'missing'> {
+  let text: string;
   try {
-    const parsed = JSON.parse(await fs.readFile(file, 'utf8')) as LockFile;
+    text = await fs.readFile(file, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'missing';
+    throw err;
+  }
+  try {
+    const parsed = JSON.parse(text) as LockFile;
     return typeof parsed?.pid === 'number' && typeof parsed.token === 'string' ? parsed : null;
   } catch {
     return null;
@@ -171,12 +249,12 @@ async function readLock(file: string): Promise<LockFile | null> {
 export async function withBankMutation<T>(bank: string, fn: (m: BankMutation) => Promise<T>): Promise<T> {
   if (!BANK_NAME_RE.test(bank)) throw new Error(`Invalid bank name "${bank}"`);
   return chained(lockKey(bank), async () => {
-    const token = await acquireFileLock(bank);
+    const held = await acquireFileLock(bank);
     try {
       if (!(await readRevision(bank))) await writeBaseline(bank);
       return await fn({ bank, markCompleted: (input) => recordCompleted(bank, input) });
     } finally {
-      await releaseFileLock(bank, token);
+      await releaseFileLock(bank, held);
     }
   });
 }

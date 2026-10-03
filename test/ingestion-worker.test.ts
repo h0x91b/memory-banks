@@ -3,7 +3,7 @@
 // fake ingest/curate steps: no model, no network.
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -256,13 +256,78 @@ test('same bank across processes: the lock file blocks the worker until the othe
   await worker.stop();
 });
 
-test('a lock file left by a dead process is reclaimed', async () => {
-  const bank = await newBank();
-  mkdirSync(path.join(root, '.locks'), { recursive: true });
+async function deadPid(): Promise<number> {
   const dead = spawn(process.execPath, ['-e', '']);
   await new Promise((r) => dead.once('exit', r));
-  writeFileSync(path.join(root, '.locks', `${bank}.lock`), JSON.stringify({ pid: dead.pid, token: 'x', acquiredAt: '' }));
+  return dead.pid!;
+}
+
+function writeGeneration(bank: string, generation: number, body: object) {
+  const dir = path.join(root, '.locks', bank);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, `${String(generation).padStart(12, '0')}.json`), JSON.stringify(body));
+}
+
+test('a lock left by a dead process is superseded by the next generation', async () => {
+  const bank = await newBank();
+  writeGeneration(bank, 5, { pid: await deadPid(), token: 'stale', acquiredAt: '' });
   assert.equal(await withBankMutation(bank, async () => 'ran'), 'ran');
+  const files = readdirSync(path.join(root, '.locks', bank)).filter((n) => n.endsWith('.json'));
+  assert.deepEqual(files, ['000000000006.json'], 'stale generation swept, own tombstone kept');
+});
+
+test('a live holder in another process is never superseded, whatever is below it', async () => {
+  const bank = await newBank();
+  const sleeper = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 800)']);
+  writeGeneration(bank, 1, { pid: await deadPid(), token: 'stale', acquiredAt: '' });
+  writeGeneration(bank, 3, { pid: sleeper.pid, token: 'live', acquiredAt: '' });
+  const t0 = Date.now();
+  let entered = 0;
+  const run = withBankMutation(bank, async () => {
+    entered = Date.now();
+  });
+  await new Promise((r) => sleeper.once('exit', r));
+  await run;
+  assert.ok(entered - t0 >= 600, `waited for the live holder (${entered - t0}ms)`);
+});
+
+// The previous delete-then-recreate reclaim let two of these children own the
+// bank at once (measured: 88 overlaps in 15 rounds of 12 reclaimers); the
+// generation lock had none.
+test('competing reclaimers of one stale lock: never more than one live owner', async () => {
+  const bank = await newBank();
+  writeGeneration(bank, 1, { pid: await deadPid(), token: 'stale', acquiredAt: '' });
+  const work = mkdtempSync(path.join(tmpdir(), 'reclaim-race-'));
+  const go = path.join(work, 'go');
+  const inside = path.join(work, 'inside');
+  const violations = path.join(work, 'violations');
+  const mod = JSON.stringify(new URL('../src/bank-mutation.ts', import.meta.url).href);
+  const script = `
+    import fs from 'node:fs';
+    const { withBankMutation } = await import(${mod});
+    while (!fs.existsSync(${JSON.stringify(go)})) await new Promise((r) => setTimeout(r, 1));
+    for (let i = 0; i < 2; i++) {
+      await withBankMutation(${JSON.stringify(bank)}, async () => {
+        try { fs.writeFileSync(${JSON.stringify(inside)}, String(process.pid), { flag: 'wx' }); }
+        catch { fs.appendFileSync(${JSON.stringify(violations)}, process.pid + '\\n'); return; }
+        await new Promise((r) => setTimeout(r, 20));
+        fs.rmSync(${JSON.stringify(inside)});
+      });
+    }`;
+  const children = Array.from({ length: 12 }, () =>
+    spawn(process.execPath, ['--input-type=module', '-e', script], {
+      env: { ...process.env, MEMORY_BANK_ROOT: root },
+      stdio: ['ignore', 'ignore', 'inherit'],
+    }),
+  );
+  await new Promise((r) => setTimeout(r, 400)); // let every child load and wait at the barrier
+  writeFileSync(go, '');
+  const codes = await Promise.all(children.map((c) => new Promise((r) => c.once('exit', r))));
+  assert.deepEqual(codes, Array(12).fill(0));
+  assert.ok(!existsSync(violations), `two owners at once: ${existsSync(violations) ? readFileSync(violations, 'utf8') : ''}`);
+  const files = readdirSync(path.join(root, '.locks', bank)).filter((n) => n.endsWith('.json'));
+  assert.equal(files.length, 1);
+  assert.equal(JSON.parse(readFileSync(path.join(root, '.locks', bank, files[0]), 'utf8')).released, true);
 });
 
 test('per-item failure keeps the other items and requests; results carry commits and revision', async () => {

@@ -23,13 +23,28 @@ and completed revision).
 Every mutating Librarian entrypoint runs inside `withBankMutation(bank, …)`:
 the legacy `POST /agents/librarian|curator/:id` routes and the CLI (through
 `src/guarded-runs.ts`) and every worker batch. The lock is an in-process
-promise chain plus an `O_EXCL` lock file `<root>/.locks/<bank>.lock` holding the
-owner pid, so a CLI run in another process waits for the server and vice
-versa. A lock file whose pid is gone is reclaimed.
+promise chain plus generation files `<root>/.locks/<bank>/<n>.json` holding
+the owner pid, so a CLI run in another process waits for the server and vice
+versa.
 
-Supported mode: **one server per `MEMORY_BANK_ROOT`** (plus occasional CLI
-runs). It is not a distributed lock: two reclaimers of the same stale lock
-file can race in a narrow window.
+Cross-process ownership = having created the highest generation while the one
+below it was dead (released or pid gone):
+
+- A stale holder is never deleted to be reclaimed. Reclaimers create the next
+  generation with an atomic, exclusive `link(2)`; two reclaimers of the same
+  stale generation compete for the same file name, so exactly one wins.
+- The highest generation is never deleted (release writes a `released`
+  tombstone), so the counter only grows.
+- After creating a generation the creator lists again and backs off if a
+  higher one exists (its view was stale).
+
+So at most one live owner exists at a time. A recycled pid makes a dead
+holder look alive: the lock then waits, it never grants twice.
+`test/ingestion-worker.test.ts` races 12 processes on one stale lock and
+checks no two are ever inside at once.
+
+Supported mode: **one server per `MEMORY_BANK_ROOT`** plus CLI runs, on one
+local filesystem. It is not a multi-host lock.
 
 Worker batches do not call `beginOperation`: the durable hold each accepted
 request carries keeps an archiving bank from settling, so an archiving bank is
