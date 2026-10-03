@@ -66,6 +66,9 @@ API, not here. A bank that is already `archived` or gone fails the batch
      `download_failed`, `download_too_large`.
    The original descriptor is passed to ingest as `origin` so provenance names
    the URL/filename, not the spool path.
+   Per-item outcomes (`source`, error `message`) show a URL only through
+   `redactUrlSecrets()`: userinfo and secret-like query values become `redacted`; the
+   stored descriptor keeps the real URL for retries.
 3. One ingest commit for the batch: a `Sources:` list mapping each raw file to
    its original source (`src/ingest-provenance.ts`), then the trailers
    `Ingestion-Batch: <token>` and one `Ingestion-Item: <request>/<index>` per

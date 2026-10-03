@@ -57,7 +57,7 @@ export interface ItemOutcome {
   error?: { code: string; message: string };
   /** Where the item landed, relative to the bank's fs/ (before curation). */
   rawPath?: string;
-  /** Item provenance: the URL, or the caller's filename. */
+  /** Item provenance: the URL with credentials and secret-like query values redacted, or the caller's filename. */
   source?: string;
   /** Already ingested by an earlier attempt of this request (crash replay). */
   replayed?: boolean;

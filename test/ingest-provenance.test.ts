@@ -21,6 +21,8 @@ import {
   formatProvenanceForBriefing,
   provenanceRecord,
   redactUri,
+  redactUrlIn,
+  redactUrlSecrets,
   sourceFromDescriptor,
   toIngestSource,
   type IngestProvenance,
@@ -220,4 +222,19 @@ test('loosely typed sources are normalised, unknown shapes are recorded as unkno
   assert.deepEqual(toIngestSource({ type: 'bogus', uri: '/tmp/x' }), { type: 'unknown' });
   assert.equal(toIngestSource(null).type, 'unknown');
   assert.equal(toIngestSource('inline').type, 'unknown');
+});
+
+test('redactUrlSecrets keeps whole URLs and leaves clean ones byte-identical; redactUrlIn scrubs echoed forms', () => {
+  const long = `https://example.com/${'a'.repeat(1500)}?X-Amz-Signature=s`;
+  assert.equal(redactUrlSecrets(long), `https://example.com/${'a'.repeat(1500)}?X-Amz-Signature=redacted`);
+  assert.equal(redactUri(long).length, 1001, 'redactUri still clamps');
+  for (const clean of ['https://Example.com/a%20b?q=x y', 'not a url', 'https://example.com/a?b=1']) {
+    assert.equal(redactUrlSecrets(clean), clean);
+  }
+  // fetch echoes the normalised href (lower-cased host); both forms are replaced.
+  assert.equal(
+    redactUrlIn('fetch https://u:p@Example.com/x?token=t: refused https://u:p@example.com/x?token=t', 'https://u:p@Example.com/x?token=t'),
+    'fetch https://redacted@example.com/x?token=redacted: refused https://redacted@example.com/x?token=redacted',
+  );
+  assert.equal(redactUrlIn('HTTP 404 for https://example.com/a', 'https://example.com/a'), 'HTTP 404 for https://example.com/a');
 });

@@ -70,3 +70,33 @@ test('archiving bank: accepted work is drained, persisted, then the bank settles
   assert.equal((await registry.get('drain'))!.status, 'archived');
   await worker.stop();
 });
+
+test('persisted item errors show a failed URL only redacted', async () => {
+  const registry = new BankRegistry();
+  const store = new IngestionStore(registry);
+  await registry.create({ id: 'secrets' });
+  const url = 'https://carol:s3cr3tpw@example.test/doc?X-Amz-Signature=SIGVAL&page=4';
+  const { record } = await store.accept({ bank: 'secrets', items: [{ kind: 'url', url }] });
+
+  const clock = new ManualClock(Date.now());
+  const worker = new IngestionWorker({
+    store,
+    clock,
+    log: () => {},
+    fetch: async () => new Response('nope', { status: 403 }),
+    ingest: async () => assert.fail('nothing to ingest'),
+    curate: async () => assert.fail('nothing to curate'),
+  });
+  await worker.start();
+  await clock.advance(60_000);
+  await settle();
+  await worker.idle();
+
+  const done = await store.get('secrets', record.id);
+  assert.equal(done!.status, 'failed');
+  assert.deepEqual(done!.items[0].error, {
+    code: 'download_failed',
+    message: 'fetch https://redacted@example.test/doc?X-Amz-Signature=redacted&page=4 → HTTP 403',
+  });
+  await worker.stop();
+});

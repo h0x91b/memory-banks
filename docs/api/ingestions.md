@@ -119,6 +119,12 @@ URL, item metadata. Concurrent identical repeats create exactly one request; key
 }
 ```
 
+`items[].url` in status and history (and in an item's `error.message`) is shown
+with secret-like query values (`token`, `key`, `sig`, `secret`, `pass`, `auth`,
+`credential`, `session` in the name) and any userinfo replaced by `redacted`,
+e.g. `?X-Amz-Signature=redacted`. A URL with nothing to redact is returned as
+stored. The worker and `Idempotency-Key` matching use the real URL.
+
 | Request `status` | Meaning |
 |---|---|
 | `queued` | Accepted, waiting for the worker. The only status this API itself produces |

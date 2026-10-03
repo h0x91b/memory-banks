@@ -30,6 +30,7 @@ import path from 'node:path';
 
 import { bankRoot } from '../bank.ts';
 import { ApiError } from '../banks/errors.ts';
+import { redactUrlIn, redactUrlSecrets } from '../ingest-provenance.ts';
 import {
   assertBankId,
   durableHoldId,
@@ -707,9 +708,24 @@ function descriptor(item: IngestionItem): ItemDescriptor {
   return rest;
 }
 
+/**
+ * What callers see. URL items show their address with credentials and
+ * secret-like query values redacted (also inside that item's error text);
+ * the stored request keeps the real URL for the worker and idempotency.
+ */
 function publicRecord(stored: StoredRequest): IngestionRecord {
   const { schema: _schema, fingerprint: _f, claim: _c, ...record } = stored;
-  return record;
+  return { ...record, items: record.items.map(publicItem) };
+}
+
+function publicItem(item: IngestionItem): IngestionItem {
+  if (item.kind !== 'url' || !item.url) return item;
+  const url = item.url;
+  return {
+    ...item,
+    url: redactUrlSecrets(url),
+    error: item.error ? { ...item.error, message: redactUrlIn(item.error.message, url) } : item.error,
+  };
 }
 
 function sha256(bytes: Buffer): string {
