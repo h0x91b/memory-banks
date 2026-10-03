@@ -1,7 +1,7 @@
 import { Hono, type Context } from 'hono';
 import { ApiError, createBanksRouter, errorEnvelope, isValidBankId } from '../src/banks/index.ts';
 import { bankRegistry, ingestionStore, runLibrarianGuarded, runRetrieverGuarded } from '../src/guarded-runs.js';
-import { createIngestionsRouter } from '../src/ingestions/index.ts';
+import { createAdmissionLogger, createIngestionsRouter } from '../src/ingestions/index.ts';
 import { startIngestionWorker } from '../src/ingestion-worker/runtime.ts';
 import { completedRevisions } from '../src/bank-mutation.ts';
 import { createQueryRouter } from '../src/query/index.ts';
@@ -64,7 +64,13 @@ app.post('/v1/banks/:bank/ingestions', async (c, next) => {
   await next();
   if (c.res.status === 202) ingestionWorker?.notify(c.req.param('bank'));
 });
-app.route('/v1', createIngestionsRouter(ingestionStore, bankRegistry));
+app.route(
+  '/v1',
+  createIngestionsRouter(ingestionStore, bankRegistry, {
+    // Says on the console when a 202'd request can start, instead of a silent window.
+    onAccepted: createAdmissionLogger(ingestionWorker ? (bank) => ingestionWorker.queueTiming(bank) : null),
+  }),
+);
 // Queries read an immutable snapshot of the last completed revision, never the
 // live tree the worker or a legacy Librarian run may be changing.
 app.route(

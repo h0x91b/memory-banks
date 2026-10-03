@@ -109,6 +109,16 @@ export type IngestCommitFormatter = (
 ) => string;
 export type BankStatusFn = (bank: string) => Promise<'active' | 'archiving' | 'archived' | 'missing'>;
 
+export interface QueueTiming {
+  windowMs: number;
+  /** Arrival of the bank's oldest queued request (ISO), null when nothing is queued. */
+  firstQueuedAt: string | null;
+  /** When that request's fixed window closes (ISO): the earliest the batch can start. */
+  eligibleAt: string | null;
+  /** A batch of this bank is running now; the next one waits for it. */
+  batchRunning: boolean;
+}
+
 export interface IngestionWorkerOptions {
   store: IngestionWorkPort;
   curate: CurateFn;
@@ -246,14 +256,34 @@ export class IngestionWorker {
     if (reaped) this.o.log(`re-queued ${reaped} request(s) from expired claims`);
     for (const { bank, firstQueuedAt } of await this.o.store.pendingBanks()) {
       if (this.windows.has(bank) || this.running.has(bank)) continue;
-      const arrived = Date.parse(firstQueuedAt);
-      const delay = Math.max(0, (Number.isFinite(arrived) ? arrived : this.o.clock.now()) + this.o.windowMs - this.o.clock.now());
+      const delay = Math.max(0, this.windowClosesAt(firstQueuedAt) - this.o.clock.now());
       const handle = this.o.clock.setTimeout(() => {
         this.windows.delete(bank);
         this.launch(bank);
       }, delay);
       this.windows.set(bank, handle);
     }
+  }
+
+  /** When the fixed window opened by the bank's oldest queued arrival closes (epoch ms). */
+  private windowClosesAt(firstQueuedAt: string): number {
+    const arrived = Date.parse(firstQueuedAt);
+    return (Number.isFinite(arrived) ? arrived : this.o.clock.now()) + this.o.windowMs;
+  }
+
+  /**
+   * Read-only view of when `bank`'s queued work becomes eligible to run. The
+   * window close is the earliest start, not a promise: a batch already running
+   * for the bank (`batchRunning`) holds the bank lock until it finishes.
+   */
+  async queueTiming(bank: string): Promise<QueueTiming> {
+    const pending = (await this.o.store.pendingBanks()).find((p) => p.bank === bank);
+    return {
+      windowMs: this.o.windowMs,
+      firstQueuedAt: pending?.firstQueuedAt ?? null,
+      eligibleAt: pending ? new Date(this.windowClosesAt(pending.firstQueuedAt)).toISOString() : null,
+      batchRunning: this.running.has(bank),
+    };
   }
 
   private launch(bank: string): void {
