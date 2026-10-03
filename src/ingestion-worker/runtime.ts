@@ -8,6 +8,7 @@
 import { getAgentInstance } from '@flue/runtime';
 import { Librarian } from '../../.flue/agents/librarian.js';
 import { ingestOne } from '../ingest.js';
+import { formatIngestCommitMessage, toIngestSource } from '../ingest-provenance.ts';
 import { runLibrarian } from '../librarian.js';
 import type { BankLifecycleGuard } from '../banks/index.ts';
 import type { IngestionWorkPort } from './port.ts';
@@ -34,8 +35,14 @@ export function createIngestionWorker(
   return new IngestionWorker({
     store,
     ingest: ingestOne,
-    curate: async (bank, runId, hint) => {
-      const res = await runLibrarian({ bank, items: [], ...(hint ? { hint } : {}) }, runId);
+    // The worker types sources loosely; anything unrecognised is recorded as "unknown".
+    formatIngestCommit: (entries, opts) =>
+      formatIngestCommitMessage(
+        entries.map((e) => ({ rawName: e.rawName, source: toIngestSource(e.source) })),
+        opts,
+      ),
+    curate: async (bank, runId, hint, ctx) => {
+      const res = await runLibrarian({ bank, items: [], ...(hint ? { hint } : {}) }, runId, ctx);
       return { commits: res.commits, summary: res.summary };
     },
     bankStatus: (bank) => banks.lookup(bank),
