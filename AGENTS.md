@@ -116,6 +116,13 @@ and commits via real git from the host side.
 - `src/changes.ts` — parse `git status --porcelain` output and strip the
   `fs/` prefix so reports talk in agent-side paths.
 - `src/sweep.ts` — move leftover `fs/_raw/` files into `fs/_unsorted/`.
+- `src/bank-mutation.ts` — one writer per bank (in-process chain + lock file
+  `<root>/.locks/<bank>.lock`) for the legacy/CLI Librarian and the ingestion
+  worker; records the last completed revision in `<root>/.revisions/<bank>.json`.
+- `src/ingestion-worker/` — processes queued ingestions: fixed 60s window per
+  bank, batch claim, per-item ingest, one Librarian run, results with commits
+  and revision; at-least-once with lease recovery
+  (`docs/design/ingestion-worker.md`).
 - `src/log-types.ts` — minimal `FlueLogger` interface for util modules
   that don't want to import the whole SDK type bundle.
 - `scripts/with-env.sh` — loads `.env` and falls back to `$OPENROUTER_FLUE`
