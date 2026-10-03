@@ -72,7 +72,12 @@ and commits via real git from the host side.
 - `.flue/app.ts` — route map: `POST /agents/librarian/:id` and
   `POST /agents/retriever/:id`, each running one pipeline synchronously.
   `POST /agents/curator/:id` is a deprecated alias of the librarian route
-  (same handler, one run per request).
+  (same handler, one run per request). Agent runs go through
+  `src/guarded-runs.ts` (also used by the CLI): an archiving/archived bank
+  answers `409` with `code: bank_archiving | bank_archived` and is not touched.
+  `/v1/*` is the bank management API (`src/banks/`, contract in
+  `docs/api/banks.md`): create/list/get/patch/archive/restore, lifecycle state
+  under `<MEMORY_BANK_ROOT>/.lifecycle/`.
 - `.flue/agents/librarian.ts`, `.flue/agents/retriever.ts` — the `'use agent'`
   functions: model, sandbox, role instructions, structured result.
 - `src/librarian.ts` — librarian pipeline: ingest → agent → sweep → commit → report.
