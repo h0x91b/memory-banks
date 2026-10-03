@@ -11,6 +11,14 @@ import { collectIndexes } from './index-scan.js';
 import { MODEL } from './model.js';
 import { MODEL_ID, RequestError, costMeta, freshInstanceId, tokensMeta } from './request.js';
 import { readStructuredReply } from './structured-result.js';
+import {
+  createSubmitGate,
+  registerGate,
+  releaseGate,
+  takeBaseline,
+  type GateOutcome,
+  type ValidationMeta,
+} from './librarian-gate.js';
 import { recordAgentCall, sharedSpendLedger } from './spend-ledger.js';
 import { Librarian, LibrarianResultSchema } from '../.flue/agents/librarian.js';
 
@@ -71,6 +79,16 @@ export async function runLibrarian(payload: LibrarianPayload | undefined, runId:
     };
   }
 
+  // Baseline after ingest, before the agent (§8.2): only new or worse errors block submit_result.
+  const baseline = await takeBaseline(fsPath);
+  banklog(
+    'validate',
+    'error' in baseline
+      ? `baseline FAILED: ${baseline.error} (submit_result will be accepted as validator-error)`
+      : `baseline ${baseline.violations.length} violation(s), ${baseline.violations.filter((v) => v.severity === 'error').length} error(s)`,
+    'blue',
+  );
+
   banklog('librarian', `LLM init: ${MODEL}`, 'blue');
   const indexToc = await collectIndexes(fsPath, { linesPerFile: 30 });
   if (indexToc) {
@@ -80,18 +98,27 @@ export async function runLibrarian(payload: LibrarianPayload | undefined, runId:
   banklog('librarian', `LLM call (prompt=${briefing.length}B, raw_entries=${rawEntries.length}, raw_files=${rawFileCount})`, 'blue');
   const tLlm = Date.now();
   const instanceId = freshInstanceId('librarian', runId);
-  const { data, usage, toolCalls } = await recordAgentCall(
-    sharedSpendLedger(),
-    { executionId: instanceId, bank, agent: 'librarian', runId, model: MODEL_ID },
-    async () => {
-      const agent = init(Librarian, { id: instanceId });
-      const receipt = await agent.dispatch({
-        message: { kind: 'user', body: briefing },
-        initialData: { bank, fsPath },
-      });
-      return readStructuredReply(await agent.read(receipt), LibrarianResultSchema);
-    },
-  );
+  const submitGate = createSubmitGate(fsPath, baseline);
+  registerGate(instanceId, submitGate);
+  let reply;
+  try {
+    reply = await recordAgentCall(
+      sharedSpendLedger(),
+      { executionId: instanceId, bank, agent: 'librarian', runId, model: MODEL_ID },
+      async () => {
+        const agent = init(Librarian, { id: instanceId });
+        const receipt = await agent.dispatch({
+          message: { kind: 'user', body: briefing },
+          initialData: { bank, fsPath, gateId: instanceId },
+        });
+        return readStructuredReply(await agent.read(receipt), LibrarianResultSchema);
+      },
+    );
+  } finally {
+    releaseGate(instanceId);
+  }
+  const { data, usage, toolCalls } = reply;
+  const gate = submitGate.outcome();
   const bashCalls = toolCalls.filter((tool) => tool === 'bash').length;
   banklog(
     'librarian',
@@ -99,6 +126,8 @@ export async function runLibrarian(payload: LibrarianPayload | undefined, runId:
     'blue',
   );
   banklog('librarian', `summary: ${data.summary}`, 'blue');
+  const validation = validationMeta(gate);
+  logValidation(banklog, gate);
 
   const swept = await sweepRawToUnsorted(fsPath);
   if (swept.length) {
@@ -133,8 +162,33 @@ export async function runLibrarian(payload: LibrarianPayload | undefined, runId:
       model: MODEL_ID,
       tokens: tokensMeta(usage),
       cost: costMeta(usage),
+      validation,
     },
   };
+}
+
+/** `meta.validation` (§9 step 7): status and every violation of the final check. */
+function validationMeta(gate: GateOutcome | null): ValidationMeta {
+  // Every accepted submit_result went through the gate; a missing outcome is a wiring bug.
+  if (!gate) return { status: 'validator-error', violations: [] };
+  return { status: gate.status, violations: gate.violations };
+}
+
+function logValidation(banklog: ReturnType<typeof bankLogger>, gate: GateOutcome | null): void {
+  if (!gate) {
+    banklog('validate', 'no gate outcome recorded — reporting validator-error', 'red');
+    return;
+  }
+  const fresh = gate.violations.filter((v) => v.new);
+  banklog(
+    'validate',
+    `${gate.status} after ${gate.rejections} rejection(s): ${gate.violations.length} violation(s), ${fresh.filter((v) => v.severity === 'error').length} new error(s), ${fresh.filter((v) => v.severity === 'warning').length} new warning(s)`,
+    gate.status === 'passed' ? 'green' : 'yellow',
+  );
+  if (gate.error) banklog('validate', `validator exception: ${gate.error}`, 'red');
+  for (const v of gate.violations.filter((x) => x.new)) {
+    banklog('validate', `  new ${v.severity} [${v.code}] ${v.message}`, 'yellow');
+  }
 }
 
 interface RawEntry {
@@ -266,7 +320,7 @@ function buildBriefing(
   );
   parts.push('');
   parts.push(
-    'You already have the index map above — use it to plan placements directly. Sample items in `_raw/` to understand what you\'re filing, then move them into the right folders and update the relevant `_index.md` files. For directories with many files, decide whether to keep them as a single themed folder or distribute the files across existing/new categories.',
+    'Use the map above to plan placements directly. Read the items in `_raw/` to understand what you\'re filing, move them into the right folders, write a `.manifest.json` for every content file you place, and update the root `/_index.md` for every folder you create, move or remove. `submit_result` validates the bank: fix any new violations it reports and submit again.',
   );
   return parts.join('\n');
 }

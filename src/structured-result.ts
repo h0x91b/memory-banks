@@ -21,8 +21,19 @@ const RESULT_PART = 'result';
  * usage aggregate and tool-call list are attached as response metadata so the
  * caller can report tokens, cost and bash-call counts.
  */
+export interface StructuredResultOptions<T> {
+  /**
+   * Runs inside `submit_result` before the result is recorded. Return `null`
+   * to accept; return a message to reject the call: the tool fails with that
+   * message, nothing is recorded, and the finish hook keeps the agent working
+   * so it can fix things and submit again.
+   */
+  gate?: (data: T) => Promise<string | null>;
+}
+
 export function useStructuredResult<TSchema extends v.ObjectSchema<v.ObjectEntries, undefined>>(
   schema: TSchema,
+  options: StructuredResultOptions<v.InferOutput<TSchema>> = {},
 ): void {
   const writeResult = useDataWriter(RESULT_PART, { schema });
 
@@ -32,7 +43,10 @@ export function useStructuredResult<TSchema extends v.ObjectSchema<v.ObjectEntri
       'Submit your final structured result. Call exactly once, when all work is done; this ends your turn.',
     input: schema,
     async run({ data }) {
-      writeResult(data as v.InferOutput<TSchema>);
+      const result = data as v.InferOutput<TSchema>;
+      const rejection = options.gate ? await options.gate(result) : null;
+      if (rejection !== null) throw new Error(rejection);
+      writeResult(result);
       return { output: 'Result recorded.', terminate: true };
     },
   });
