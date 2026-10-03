@@ -374,7 +374,7 @@ function buildBriefing(
   );
   parts.push('');
   parts.push(
-    'Use the map above to plan placements directly. Read the items in `_raw/` to understand what you\'re filing, move them into the right folders, write a `.manifest.json` for every content file you place, and update the root `/_index.md` for every folder you create, move or remove. `submit_result` validates the bank: fix any new violations it reports and submit again.',
+    'Use the map above to plan placements directly. Read every item in `_raw/` in full and classify it: notes are filed, rewritten or merged; source material (HTML pages, web bundles, text data in JS/JSON, long exports) is turned into grounded topic notes in Markdown, merged into existing notes where they cover the topic; shell assets (CSS, UI JavaScript, icons, fonts) are not bank content. Moving originals with manifests is not knowledge. Write a `.manifest.json` for every content file you place or write, and update the root `/_index.md` for every folder you create, move or remove. `submit_result` validates the bank: fix any new violations it reports and submit again.',
   );
   return parts.join('\n');
 }
