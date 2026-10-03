@@ -54,3 +54,14 @@ export function preview(s: string, max = 200): string {
   if (oneLine.length <= max) return oneLine;
   return oneLine.slice(0, max) + '…';
 }
+
+/** Human-readable elapsed time for run logs: `850ms`, `4.2s`, `17m 32s`, `1h 03m`. */
+export function formatDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const totalSec = Math.round(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  return h > 0 ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m ${String(s).padStart(2, '0')}s`;
+}
