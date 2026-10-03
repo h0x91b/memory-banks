@@ -85,6 +85,8 @@ export interface IngestionRecord {
   items: IngestionItem[];
   /** Bank revision (git commit) the worker produced; null until completed. */
   revision: string | null;
+  /** Commits the worker made for this request's batch (e.g. ingest + curate), short or full shas. */
+  commits: string[];
   error: ItemError | null;
 }
 
@@ -158,6 +160,8 @@ export interface RequestOutcome {
   items: ItemOutcome[];
   /** Bank revision (git commit sha) that contains this request's result. */
   revision?: string | null;
+  /** Commits made for this request's batch, oldest first. At most 50 hex shas (4-64 chars). */
+  commits?: string[];
   /** Request-level error, e.g. when every item failed for one reason. */
   error?: ItemError | null;
 }
@@ -229,6 +233,7 @@ export function newIngestionId(now = Date.now()): string {
   return `ing_${now.toString(36).padStart(10, '0')}_${randomBytes(6).toString('hex')}`;
 }
 
+const SHA_RE = /^[0-9a-f]{4,64}$/;
 const ID_RE = /^ing_[0-9a-z]{10}_[0-9a-f]{12}$/;
 
 export function isIngestionId(id: unknown): id is string {
@@ -317,6 +322,7 @@ export class IngestionStore implements IngestionWorkQueue {
         error: null,
       })),
       revision: null,
+      commits: [],
       error: null,
       fingerprint,
       claim: null,
@@ -520,6 +526,10 @@ export class IngestionStore implements IngestionWorkQueue {
       const results: StoredRequest[] = [];
       for (const stored of owned) {
         const outcome = byId.get(stored.id)!;
+        const commits = outcome.commits ?? [];
+        if (!Array.isArray(commits) || commits.length > 50 || commits.some((c) => typeof c !== 'string' || !SHA_RE.test(c))) {
+          throw new Error(`complete(): commits of ${stored.id} must be at most 50 hex shas`);
+        }
         const itemOutcomes = new Map(outcome.items.map((i) => [i.index, i]));
         if (itemOutcomes.size !== stored.items.length || stored.items.some((i) => !itemOutcomes.has(i.index))) {
           throw new Error(`complete() needs exactly one outcome per item of ${stored.id}`);
@@ -541,6 +551,7 @@ export class IngestionStore implements IngestionWorkQueue {
           finishedAt: now,
           updatedAt: now,
           revision: outcome.revision ?? null,
+          commits: [...commits],
           error: outcome.error ?? null,
           claim: null,
         };
@@ -680,7 +691,8 @@ export class IngestionStore implements IngestionWorkQueue {
     if (raw.schema !== 1 || raw.id !== id || raw.bank !== bank || !INGESTION_STATUSES.includes(raw.status)) {
       throw new Error(`Corrupt ingestion record ${this.requestFile(bank, id)}`);
     }
-    return raw;
+    // Records written before `commits` existed read as having none.
+    return { ...raw, commits: raw.commits ?? [] };
   }
 
   private async writeStored(stored: StoredRequest): Promise<void> {

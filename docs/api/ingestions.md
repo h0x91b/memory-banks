@@ -1,8 +1,8 @@
 # Ingestion API (`/v1/banks/:bank/ingestions`)
 
 Accept material for a bank **durably** and answer at once with `202 Accepted`. Nothing here runs a model, fetches a
-URL or writes into the bank: the request is stored in a queue outside the bank, and a separate worker processes it
-later through the store port described below.
+URL or writes into the bank: the request is stored in a queue outside the bank, and the ingestion worker started with the server processes it
+later through the store port described below (batching, retries and replay: `docs/design/ingestion-worker.md`).
 
 Code: `src/ingestions/` (`store.ts` storage + queue port, `router.ts` HTTP). Mounted in `.flue/app.ts` as
 `app.route('/v1', createIngestionsRouter(ingestionStore, bankRegistry))`; the store instance lives in
@@ -114,6 +114,7 @@ URL, item metadata. Concurrent identical repeats create exactly one request; key
       "sha256": null, "url": "https://example.com/post", "metadata": null, "status": "queued", "error": null }
   ],
   "revision": null,
+  "commits": [],
   "error": null
 }
 ```
@@ -127,7 +128,8 @@ URL, item metadata. Concurrent identical repeats create exactly one request; key
 | `failed` | No item succeeded; `error` may hold a request-level reason |
 
 Item `status`: `queued`, `running`, `succeeded`, `failed`; a failed item carries `error: {code, message}`.
-`revision` is the bank revision (git commit) the worker produced, `null` until completed.
+`revision` is the bank revision (git commit) the worker produced, `null` until completed. `commits` lists the
+commits the worker made for the request's batch (e.g. ingest + curate), oldest first; `[]` until completed.
 
 ## `GET /v1/banks/:bank/ingestions` — history
 
@@ -200,7 +202,8 @@ reapExpired(now?): Promise<number>;                                         // e
 recoverAll(): Promise<void>;
 ```
 
-- `complete` derives the request status from item outcomes, stores `revision` and `error`, and releases the holds.
+- `complete` derives the request status from item outcomes, stores `revision`, `commits` (optional, at most 50
+  hex shas) and `error`, and releases the holds. A malformed `commits` rejects the whole call before anything is written.
 - A stale token (lease reaped, or already completed) gets `IngestionClaimLost` (`code: 'claim_lost'`) everywhere.
 - The worker processes claimed work even on an `archiving` bank and must not call `beginOperation` for it: the
   hold, not a lease, is what admits it.

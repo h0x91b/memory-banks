@@ -2,6 +2,7 @@ import { Hono, type Context } from 'hono';
 import { ApiError, createBanksRouter, errorEnvelope, isValidBankId } from '../src/banks/index.ts';
 import { bankRegistry, ingestionStore, runLibrarianGuarded, runRetrieverGuarded } from '../src/guarded-runs.js';
 import { createIngestionsRouter } from '../src/ingestions/index.ts';
+import { startIngestionWorker } from '../src/ingestion-worker/runtime.ts';
 import { RequestError } from '../src/request.js';
 import { sharedSpendLedger } from '../src/spend-ledger.js';
 import { createStatsRouter, httpStatsMiddleware, tagRequestBank } from '../src/stats-router.js';
@@ -51,6 +52,14 @@ app.use('/v1/banks/:bank', async (c, next) => {
   return next();
 });
 app.route('/v1', createBanksRouter(bankRegistry));
+// Accepted ingestions are processed by one worker per process: one Librarian
+// run per bank per fixed 60s window (docs/design/ingestion-worker.md). It
+// starts once the Flue runtime is up and stops with the server.
+const ingestionWorker = startIngestionWorker(ingestionStore, bankRegistry);
+app.post('/v1/banks/:bank/ingestions', async (c, next) => {
+  await next();
+  if (c.res.status === 202) ingestionWorker?.notify(c.req.param('bank'));
+});
 app.route('/v1', createIngestionsRouter(ingestionStore, bankRegistry));
 app.route('/', createStatsRouter({ ledger: sharedSpendLedger(), banks: bankRegistry }));
 app.notFound((c) =>
