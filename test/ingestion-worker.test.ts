@@ -393,6 +393,64 @@ test('per-item failure keeps the other items and requests; results carry commits
   await worker.stop();
 });
 
+test('URL item outcomes redact credentials and signed query values, keep host/path/plain params', async () => {
+  const SECRETS = ['hunter2', 'SIGSECRET', 'TOKSECRET', 'p4ss', 'BIGKEY', 'AKIAEXAMPLE'];
+  const okUrl = 'https://alice:hunter2@example.test/ok?X-Amz-Signature=SIGSECRET&X-Amz-Credential=AKIAEXAMPLE&page=2';
+  const missingUrl = 'https://example.test/missing?token=TOKSECRET&lang=en';
+  const credsUrl = 'https://bob:p4ss@example.test/creds.html';
+  const bigUrl = 'https://example.test/big.txt?api_key=BIGKEY';
+  const fetch = async (url: string) => {
+    if (url === okUrl) return new Response('<p>hi</p>', { headers: { 'content-type': 'text/html' } });
+    if (url === bigUrl) return new Response('x'.repeat(64), { headers: { 'content-type': 'text/plain' } });
+    if (url === credsUrl) return globalThis.fetch(url); // real Node fetch: rejects and echoes the full URL
+    return new Response('nope', { status: 404 });
+  };
+  const { clock, store, worker } = setup({ fetch, downloadMaxBytes: 16 });
+  const bank = await newBank();
+  await worker.start();
+  store.enqueue(
+    bank,
+    [
+      { index: 0, kind: 'url', url: okUrl },
+      { index: 1, kind: 'url', url: missingUrl },
+      { index: 2, kind: 'url', url: credsUrl },
+      { index: 3, kind: 'url', url: bigUrl },
+    ],
+    { id: 'sec' },
+  );
+  worker.notify(bank);
+  await drain(worker);
+  await clock.advance(MIN);
+  await drain(worker);
+
+  const items = store.requests.get('sec')!.outcome!.items;
+  assert.deepEqual(
+    items.map((i) => [i.index, i.status, i.error?.code ?? null]),
+    [
+      [0, 'succeeded', null],
+      [1, 'failed', 'download_failed'],
+      [2, 'failed', 'download_failed'],
+      [3, 'failed', 'download_too_large'],
+    ],
+  );
+  const published = JSON.stringify(items);
+  for (const s of SECRETS) assert.ok(!published.includes(s), `outcome leaks ${s}: ${published}`);
+  // Source identity stays useful: host, path and non-secret params survive.
+  assert.equal(
+    items[0].source,
+    'https://redacted@example.test/ok?X-Amz-Signature=redacted&X-Amz-Credential=redacted&page=2',
+  );
+  assert.equal(items[0].rawPath, '_raw/ok.html');
+  assert.equal(items[1].source, 'https://example.test/missing?token=redacted&lang=en');
+  assert.equal(items[1].error!.message, 'fetch https://example.test/missing?token=redacted&lang=en → HTTP 404');
+  assert.equal(items[2].source, 'https://redacted@example.test/creds.html');
+  assert.match(items[2].error!.message, /includes credentials: https:\/\/redacted@example\.test\/creds\.html$/);
+  assert.match(items[3].error!.message, /^fetch https:\/\/example\.test\/big\.txt\?api_key=redacted: body exceeds 16 bytes$/);
+  // The stored descriptor is untouched: a retry still downloads the real URL.
+  assert.equal(store.requests.get('sec')!.items[0].url, okUrl);
+  await worker.stop();
+});
+
 test('curate failure: requests fail, completed revision is not advanced', async () => {
   const clock = new ManualClock();
   const store = new FakeIngestionStore(clock.now);

@@ -73,20 +73,46 @@ export function toIngestSource(v: unknown): IngestSource {
  * Unparseable input is returned unchanged apart from length clamping.
  */
 export function redactUri(uri: string): string {
+  return clamp(redactUrlSecrets(uri));
+}
+
+/**
+ * Same redaction without length clamping, for projections that must keep a
+ * URL whole (API records, job outcomes). A URL with nothing to redact, or one
+ * that does not parse, is returned byte-for-byte.
+ */
+export function redactUrlSecrets(uri: string): string {
   let u: URL;
   try {
     u = new URL(uri);
   } catch {
-    return clamp(uri);
+    return uri;
   }
+  let changed = false;
   if (u.username || u.password) {
     u.username = 'redacted';
     u.password = '';
+    changed = true;
   }
   for (const key of [...u.searchParams.keys()]) {
-    if (SENSITIVE_PARAM_RE.test(key)) u.searchParams.set(key, 'redacted');
+    if (SENSITIVE_PARAM_RE.test(key)) {
+      u.searchParams.set(key, 'redacted');
+      changed = true;
+    }
   }
-  return clamp(u.toString());
+  return changed ? u.toString() : uri;
+}
+
+/** Replace a URL (as given, or as normalised by `new URL`) inside free text with its redacted form. */
+export function redactUrlIn(text: string, uri: string): string {
+  const shown = redactUrlSecrets(uri);
+  const forms = [uri];
+  try {
+    forms.push(new URL(uri).href);
+  } catch {
+    // unparseable: only the raw form can appear
+  }
+  return forms.reduce((t, f) => (f === shown ? t : t.split(f).join(shown)), text);
 }
 
 /** One JSON object per entry: control characters are escaped, so a hostile URI or filename cannot forge extra lines. */

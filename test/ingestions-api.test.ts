@@ -430,3 +430,69 @@ test('MEMORY_BANK_INGESTION_DIR moves the queue; default stays outside bank dirs
     delete process.env.MEMORY_BANK_INGESTION_DIR;
   }
 });
+
+test('public records redact URL secrets; stored request, worker descriptor and idempotency keep the real URL', async () => {
+  const signed = 'https://bucket.example.com/doc.pdf?X-Amz-Credential=AKIAEXAMPLE&X-Amz-Signature=SIGVAL&page=2';
+  const shown = 'https://bucket.example.com/doc.pdf?X-Amz-Credential=redacted&X-Amz-Signature=redacted&page=2';
+  const long = `https://example.com/${'p'.repeat(1500)}?q=1`; // > redactUri's 1000-char clamp
+  const body = { items: [{ type: 'url', url: signed }, { type: 'url', url: long }] };
+  const leaks = (v: unknown) => ['AKIAEXAMPLE', 'SIGVAL'].filter((s) => JSON.stringify(v).includes(s));
+
+  const res = await post(body, { 'Idempotency-Key': 'signed-1' });
+  assert.equal(res.status, 202, JSON.stringify(res.body));
+  assert.deepEqual(leaks(res.body), []);
+  const id = res.body.id;
+
+  // Status and history: same field shape, secrets redacted, harmless URL byte-identical.
+  const got = (await send('GET', `/v1/banks/notes/ingestions/${id}`)).body;
+  assert.equal(got.items[0].url, shown);
+  assert.equal(got.items[1].url, long);
+  assert.deepEqual(leaks(got), []);
+  const listed = (await send('GET', '/v1/banks/notes/ingestions')).body;
+  assert.equal(listed.ingestions[0].items[0].url, shown);
+  assert.deepEqual(leaks(listed), []);
+
+  // Idempotency still compares the real payload: same URL replays, another signature conflicts.
+  const again = await post(body, { 'Idempotency-Key': 'signed-1' });
+  assert.equal(again.status, 202);
+  assert.equal(again.body.id, id);
+  assert.equal(again.headers.get('idempotent-replayed'), 'true');
+  assert.deepEqual(leaks(again.body), []);
+  const other = await post({ items: [{ type: 'url', url: signed.replace('SIGVAL', 'SIGOTHER') }, body.items[1]] }, {
+    'Idempotency-Key': 'signed-1',
+  });
+  assertError(other, 409, 'idempotency_conflict');
+
+  // Internal descriptors are untouched: the stored request and the worker claim carry the real URL.
+  const stored = JSON.parse(await fs.readFile(path.join(reqDir('notes', id), 'request.json'), 'utf8'));
+  assert.equal(stored.items[0].url, signed);
+  const claim = await store.claimBatch({ bank: 'notes', workerId: 'w', leaseMs: 60_000 });
+  assert.equal(claim!.requests[0].items[0].url, signed);
+
+  // An item error that quotes the URL (e.g. stored before outcome redaction) is shown redacted too.
+  const done = await store.complete(claim!, [
+    {
+      requestId: id,
+      items: [
+        { index: 0, status: 'failed', error: { code: 'download_failed', message: `fetch ${signed} → HTTP 403` } },
+        { index: 1, status: 'succeeded' },
+      ],
+    },
+  ]);
+  assert.deepEqual(leaks(done), []);
+  const final = (await send('GET', `/v1/banks/notes/ingestions/${id}`)).body;
+  assert.deepEqual(final.items[0].error, { code: 'download_failed', message: `fetch ${shown} → HTTP 403` });
+  assert.deepEqual(leaks(final), []);
+  assert.equal(JSON.parse(await fs.readFile(path.join(reqDir('notes', id), 'request.json'), 'utf8')).items[0].url, signed);
+});
+
+test('public records redact userinfo on URLs that reached the store without the router check', async () => {
+  const url = 'https://alice:hunter2@example.com/private.md';
+  const { record } = await store.accept({ bank: 'notes', items: [{ kind: 'url', url }] });
+  assert.equal(record.items[0].url, 'https://redacted@example.com/private.md');
+  const got = (await send('GET', `/v1/banks/notes/ingestions/${record.id}`)).body;
+  assert.equal(got.items[0].url, 'https://redacted@example.com/private.md');
+  assert.ok(!JSON.stringify(got).includes('hunter2'));
+  const stored = JSON.parse(await fs.readFile(path.join(reqDir('notes', record.id), 'request.json'), 'utf8'));
+  assert.equal(stored.items[0].url, url);
+});

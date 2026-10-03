@@ -32,6 +32,7 @@ import { promisify } from 'node:util';
 import { bankFsPath, bankPath } from '../bank.ts';
 import { withBankMutation, type BankMutation } from '../bank-mutation.ts';
 import { gitCommitAll, gitEnsureRepo } from '../git.ts';
+import { redactUrlIn, redactUrlSecrets } from '../ingest-provenance.ts';
 import type { IngestItem, IngestResult } from '../ingest.ts';
 import {
   isClaimLost,
@@ -373,7 +374,7 @@ export class IngestionWorker {
             items.push({
               index: item.index,
               status: 'failed',
-              error: { code: errorCode(err), message: errorMessage(err) },
+              error: { code: errorCode(err), message: itemErrorMessage(item, err) },
               ...(source ? { source } : {}),
             });
           }
@@ -517,8 +518,16 @@ function metaString(r: QueuedRequest, key: string): string | undefined {
   return typeof v === 'string' && v ? v : undefined;
 }
 
+/** Public provenance for an item outcome; a URL is redacted (the stored descriptor keeps the real one). */
 function itemSource(item: QueuedItem): string | undefined {
-  return (item.kind === 'url' ? item.url : item.filename) ?? undefined;
+  if (item.kind === 'url') return item.url ? redactUrlSecrets(item.url) : undefined;
+  return item.filename ?? undefined;
+}
+
+/** Outcome error text: a URL item's own address (raw or as echoed by fetch) shows only redacted. */
+function itemErrorMessage(item: QueuedItem, err: unknown): string {
+  const message = errorMessage(err);
+  return item.kind === 'url' && item.url ? redactUrlIn(message, item.url) : message;
 }
 
 /** `<request>/<index>` keys already ingested, from `Ingestion-Item:` trailers in the bank's history. */
