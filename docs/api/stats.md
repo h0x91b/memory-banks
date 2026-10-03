@@ -5,9 +5,9 @@ current calendar month. Code: `src/stats-router.ts` (routes, HTTP middleware),
 `src/spend-ledger.ts` (journal), `src/spend-stats.ts` (aggregation),
 `src/stats-periods.ts` (calendar boundaries).
 
-> Status: the module and routes exist and are tested offline; they are not yet
-> mounted in `.flue/app.ts` and the pipelines do not record spend yet. See
-> "Wiring" below.
+> Status: Librarian and retriever runs are recorded (`recordAgentCall` in
+> `src/librarian.ts`, `src/retriever.ts`). The routes and the HTTP middleware
+> are not mounted in `.flue/app.ts` yet. See "Wiring" below.
 
 ## Endpoints
 
@@ -127,19 +127,22 @@ GET /v1/banks/personal-notes/stats?timezone=Asia/Jerusalem
 - The whole file is read per stats request. Fine for thousands of events; a
   rollup or index is needed if it grows into the millions.
 
-## Wiring (pending)
+## Wiring
 
-| Where | What to add |
+| Where | State |
 |---|---|
-| `.flue/app.ts` | `const ledger = sharedSpendLedger();` `app.use('*', httpStatsMiddleware(ledger));` before the routes, and `app.route('/', createStatsRouter({ ledger, banks: new BankRegistry() }))` (`src/banks/index.ts`); swap the local `apiError` helper for the shared `ApiError` envelope |
-| Librarian pipeline | wrap the agent call: `recordAgentCall(sharedSpendLedger(), { executionId: instanceId, bank, agent: 'librarian', runId, model: MODEL_ID }, async () => readStructuredReply(await agent.read(await agent.dispatch(...)), Schema))` |
-| Retriever pipeline | the same with `agent: 'retriever'` |
+| `src/librarian.ts`, `src/retriever.ts` | Done: the agent call is wrapped in `recordAgentCall(sharedSpendLedger(), { executionId: instanceId, bank, agent, runId, model: MODEL_ID }, ...)` |
+| `.flue/app.ts` | Pending: `app.use('*', httpStatsMiddleware(sharedSpendLedger()))` before the routes, `app.route('/', createStatsRouter({ ledger: sharedSpendLedger(), banks: bankRegistry }))` with the shared registry from `src/guarded-runs.ts` |
 
 `recordAgentCall` records the returned usage on success. If the call throws,
 it records the attempt with no usage (shows up as `calls_missing_cost`) and
 rethrows the same error. A ledger write failure is logged and never fails the
 pipeline.
 
-`executionId` must be unique per paid attempt: the fresh agent instance id
-(`freshInstanceId`) already is. A retried HTTP request gets a new instance id
-and is counted again — correctly, it was paid again.
+`executionId` is the fresh agent instance id (`freshInstanceId`), unique per
+paid attempt. A retried HTTP request gets a new instance id and is counted
+again — correctly, it was paid again.
+
+A run whose model call succeeds but never submits a structured result fails
+inside `readStructuredReply`; it is recorded as missing cost even though the
+reply carried usage.

@@ -11,6 +11,7 @@ import { collectIndexes } from './index-scan.js';
 import { MODEL } from './model.js';
 import { MODEL_ID, RequestError, costMeta, freshInstanceId, tokensMeta } from './request.js';
 import { readStructuredReply } from './structured-result.js';
+import { recordAgentCall, sharedSpendLedger } from './spend-ledger.js';
 import { Librarian, LibrarianResultSchema } from '../.flue/agents/librarian.js';
 
 export interface LibrarianPayload {
@@ -78,12 +79,19 @@ export async function runLibrarian(payload: LibrarianPayload | undefined, runId:
   const briefing = buildBriefing(bank, rawEntries, rawFileCount, payload?.hint, indexToc);
   banklog('librarian', `LLM call (prompt=${briefing.length}B, raw_entries=${rawEntries.length}, raw_files=${rawFileCount})`, 'blue');
   const tLlm = Date.now();
-  const agent = init(Librarian, { id: freshInstanceId('librarian', runId) });
-  const receipt = await agent.dispatch({
-    message: { kind: 'user', body: briefing },
-    initialData: { bank, fsPath },
-  });
-  const { data, usage, toolCalls } = readStructuredReply(await agent.read(receipt), LibrarianResultSchema);
+  const instanceId = freshInstanceId('librarian', runId);
+  const { data, usage, toolCalls } = await recordAgentCall(
+    sharedSpendLedger(),
+    { executionId: instanceId, bank, agent: 'librarian', runId, model: MODEL_ID },
+    async () => {
+      const agent = init(Librarian, { id: instanceId });
+      const receipt = await agent.dispatch({
+        message: { kind: 'user', body: briefing },
+        initialData: { bank, fsPath },
+      });
+      return readStructuredReply(await agent.read(receipt), LibrarianResultSchema);
+    },
+  );
   const bashCalls = toolCalls.filter((tool) => tool === 'bash').length;
   banklog(
     'librarian',
