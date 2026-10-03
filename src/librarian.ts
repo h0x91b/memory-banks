@@ -7,7 +7,7 @@ import { gitCommitAll, gitEnsureRepo } from './git.js';
 import { readGitChanges, type Change } from './changes.js';
 import { sweepRawToUnsorted } from './sweep.js';
 import { bankLogger } from './console-log.js';
-import { collectIndexes } from './index-scan.js';
+import { buildBankBriefing, summarizeBriefing } from './bank-briefing/index.ts';
 import { MODEL } from './model.js';
 import { MODEL_ID, RequestError, costMeta, freshInstanceId, tokensMeta } from './request.js';
 import { readStructuredReply } from './structured-result.js';
@@ -90,11 +90,12 @@ export async function runLibrarian(payload: LibrarianPayload | undefined, runId:
   );
 
   banklog('librarian', `LLM init: ${MODEL}`, 'blue');
-  const indexToc = await collectIndexes(fsPath, { linesPerFile: 30 });
-  if (indexToc) {
-    banklog('librarian', `pre-injected ${indexToc.split('\n### ').length} _index.md file(s) into briefing`, 'blue');
+  const bankBriefing = await buildBankBriefing(fsPath, { role: 'librarian' });
+  banklog('briefing', summarizeBriefing(bankBriefing), 'blue');
+  for (const d of bankBriefing.diagnostics) {
+    banklog('briefing', `  [${d.code}] ${d.message}`, 'yellow');
   }
-  const briefing = buildBriefing(bank, rawEntries, rawFileCount, payload?.hint, indexToc);
+  const briefing = buildBriefing(bank, rawEntries, rawFileCount, payload?.hint, bankBriefing.text);
   banklog('librarian', `LLM call (prompt=${briefing.length}B, raw_entries=${rawEntries.length}, raw_files=${rawFileCount})`, 'blue');
   const tLlm = Date.now();
   const instanceId = freshInstanceId('librarian', runId);
@@ -284,7 +285,7 @@ function buildBriefing(
   rawEntries: RawEntry[],
   totalFiles: number,
   hint: string | undefined,
-  indexToc: string,
+  bankBriefing: string,
 ): string {
   const parts: string[] = [];
   parts.push(`# Curate memory bank \`${bank}\``);
@@ -305,15 +306,13 @@ function buildBriefing(
     parts.push(hint.trim());
     parts.push('');
   }
-  if (indexToc) {
-    parts.push('## Existing index map (pre-loaded)');
-    parts.push(
-      "Top lines of every `_index.md` already in the bank are included below so you don't need to `tree` or `cat _index.md` to orient. Use this to decide where new items fit — and which indexes you'll need to update after placing them.",
-    );
-    parts.push('');
-    parts.push(indexToc);
-    parts.push('');
-  }
+  parts.push('## Bank map, glossary and open questions (pre-loaded)');
+  parts.push(
+    'Below, verbatim: the root `/_index.md`, the glossary generated from every manifest, and your `/_open-questions.md` when it exists. No need to `tree` the bank or `cat /_index.md` to orient.',
+  );
+  parts.push('');
+  parts.push(bankBriefing.trimEnd());
+  parts.push('');
   parts.push('## Your job');
   parts.push(
     'Use your tools (`bash`, `read`, `write`, `edit`, `grep`, `glob`) to inspect, decide, and execute the curation. Follow the rules in your role instructions. When fully done, submit `{ summary }` as your structured result.',

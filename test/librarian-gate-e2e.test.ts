@@ -295,6 +295,44 @@ test('meta.validation is absent when _raw/ is empty and no agent runs', async ()
   assert.equal('validation' in (report.meta ?? {}), false);
 });
 
+test('briefing injects the full root map, the generated glossary and open questions', async () => {
+  const bank = 'gate-briefing';
+  // 35 folders: more map lines than the old 30-line cut, so truncation would show.
+  const folders: Record<string, string> = {};
+  const files: Record<string, string> = {};
+  for (let i = 1; i <= 35; i++) {
+    const dir = `topic-${String(i).padStart(2, '0')}/`;
+    folders[dir] = `Topic number ${i}`;
+    Object.assign(files, note(`${dir}n.md`, `Topic ${i}`));
+  }
+  files['ml/rm.md'] = '# RM\n\nLIPO is a listwise preference optimization variant.\n';
+  files['ml/rm.md.manifest.json'] = JSON.stringify({
+    title: 'Reward-model notes',
+    keywords: ['LIPO'],
+    glossary: { LIPO: 'Listwise preference optimization variant' },
+  });
+  folders['ml/'] = 'Machine-learning notes';
+  const sorted = Object.fromEntries(Object.entries(folders).sort(([a], [b]) => (a < b ? -1 : 1)));
+  const map = rootMap(bank, sorted);
+  seedBank(bank, { '_index.md': map, ...files, '_open-questions.md': '# Open questions\n\n- Is topic-01 related to ml/?\n' });
+
+  const seen: { briefing?: string } = {};
+  fx.faux.setResponses([
+    (context: any) => {
+      const first = (context.messages as any[]).find((m) => m.role === 'user');
+      seen.briefing = typeof first.content === 'string' ? first.content : first.content.map((c: any) => c.text ?? '').join('');
+      return bashStep('mkdir -p /_unsorted && mv /_raw/b.md /_unsorted/b.md');
+    },
+    submit('Moved b.md to _unsorted/'),
+  ]);
+  const report = await fx.runLibrarian({ bank, items: [inline('b.md', 'unclear\n')] }, 'gate-briefing');
+
+  assert.ok(seen.briefing!.includes(map.trimEnd()), 'root map verbatim, all 36 lines');
+  assert.match(seen.briefing!, /## Glossary \(generated from manifests\)\n\nLIPO — Listwise preference optimization variant \(ml\/rm\.md\)/);
+  assert.match(seen.briefing!, /- Is topic-01 related to ml\/\?/);
+  assert.equal(report.meta.validation.status, 'passed');
+});
+
 test('gated runs still land in the spend ledger with the reported tokens', async () => {
   const ledger = path.join(bankRoot, '.accounting', 'ledger.jsonl');
   const calls = readFileSync(ledger, 'utf8')
@@ -302,10 +340,10 @@ test('gated runs still land in the spend ledger with the reported tokens', async
     .split('\n')
     .map((l) => JSON.parse(l))
     .filter((e) => e.kind === 'model_call' && e.agent === 'librarian');
-  // One ledger call per Librarian run that reached the agent (six above), whatever the gate did.
+  // One ledger call per Librarian run that reached the agent (seven above), whatever the gate did.
   assert.deepEqual(
     calls.map((e) => e.run_id),
-    ['gate-fix', 'gate-four', 'gate-legacy', 'gate-worse', 'gate-crash', 'gate-crash-baseline'],
+    ['gate-fix', 'gate-four', 'gate-legacy', 'gate-worse', 'gate-crash', 'gate-crash-baseline', 'gate-briefing'],
   );
   for (const e of calls) assert.ok(e.tokens?.total > 0, `${e.run_id} tokens recorded`);
 });
