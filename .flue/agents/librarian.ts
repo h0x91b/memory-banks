@@ -3,6 +3,7 @@ import { bash, useInitialData, useModel, useSandbox } from '@flue/runtime';
 import * as v from 'valibot';
 import roleDoc from '../roles/librarian.md';
 import { createBankBashFactory } from '../../src/bash-factory.js';
+import { withPagedTools } from '../../src/sandbox-tools.js';
 import { MODEL, LIBRARIAN_THINKING_LEVEL } from '../../src/model.js';
 import { roleInstructions } from '../../src/role.js';
 import { findGate } from '../../src/librarian-gate.js';
@@ -29,7 +30,7 @@ export const LibrarianInitSchema = v.object({
 export function Librarian() {
   const { bank, fsPath, gateId } = useInitialData<v.InferOutput<typeof LibrarianInitSchema>>();
   useModel(MODEL, { thinkingLevel: LIBRARIAN_THINKING_LEVEL });
-  useSandbox(bash(createBankBashFactory({ bank, bankFsPath: fsPath })));
+  useSandbox(withPagedTools(bash(createBankBashFactory({ bank, bankFsPath: fsPath }))));
   useStructuredResult(LibrarianResultSchema, {
     gate: gateId
       ? async () => {
