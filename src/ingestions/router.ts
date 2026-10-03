@@ -8,6 +8,7 @@ import { bodyLimit } from 'hono/body-limit';
 
 import { ApiError, errorEnvelope } from '../banks/errors.ts';
 import { assertBankId, type BankLifecycleGuard } from '../banks/registry.ts';
+import type { AdmissionEvent } from './admission-log.ts';
 import {
   INGESTION_STATUSES,
   isIngestionId,
@@ -35,7 +36,16 @@ const STATUS_FILTERS: readonly (IngestionStatus | 'all')[] = [...INGESTION_STATU
 const IDEMPOTENCY_KEY_RE = /^[\x21-\x7e]{1,255}$/;
 const MEDIA_TYPE_RE = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i;
 
-export function createIngestionsRouter(store: IngestionStore, banks: BankLifecycleGuard): Hono {
+export interface IngestionsRouterOptions {
+  /** Called once per 202, after the request is durably stored; not awaited by the response. */
+  onAccepted?: (event: AdmissionEvent) => void | Promise<void>;
+}
+
+export function createIngestionsRouter(
+  store: IngestionStore,
+  banks: BankLifecycleGuard,
+  options: IngestionsRouterOptions = {},
+): Hono {
   const router = new Hono();
 
   router.post(
@@ -67,6 +77,13 @@ export function createIngestionsRouter(store: IngestionStore, banks: BankLifecyc
         const statusUrl = `/v1/banks/${bank}/ingestions/${record.id}`;
         c.header('Location', statusUrl);
         if (replayed) c.header('Idempotent-Replayed', 'true');
+        notifyAccepted(options.onAccepted, {
+          bank,
+          id: record.id,
+          status: record.status,
+          itemCount: record.items.length,
+          replayed,
+        });
         return c.json({ id: record.id, status: record.status, status_url: statusUrl }, 202);
       }),
   );
@@ -113,6 +130,15 @@ export function createIngestionsRouter(store: IngestionStore, banks: BankLifecyc
   );
 
   return router;
+}
+
+function notifyAccepted(hook: IngestionsRouterOptions['onAccepted'], event: AdmissionEvent): void {
+  if (!hook) return;
+  try {
+    void Promise.resolve(hook(event)).catch((err) => console.error('[ingestions] onAccepted failed', err));
+  } catch (err) {
+    console.error('[ingestions] onAccepted failed', err);
+  }
 }
 
 async function handle(c: Context, fn: () => Promise<Response>): Promise<Response> {
