@@ -5,10 +5,14 @@
 import { ensureBank } from './bank.js';
 import { BankRegistry, runGuarded } from './banks/index.ts';
 import { gitEnsureRepo } from './git.js';
+import { IngestionStore } from './ingestions/index.ts';
 import { runLibrarian, type LibrarianPayload } from './librarian.js';
 import { runRetriever, type RetrieverPayload } from './retriever.js';
 
 export const bankRegistry = new BankRegistry();
+
+/** Durable intake queue; its accepted work holds archiving through bankRegistry. */
+export const ingestionStore = new IngestionStore(bankRegistry);
 
 /** The librarian creates a missing bank, exactly as runLibrarian would. */
 async function scaffoldBank(bank: string): Promise<void> {

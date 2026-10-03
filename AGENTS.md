@@ -80,7 +80,11 @@ and commits via real git from the host side.
   under `<MEMORY_BANK_ROOT>/.lifecycle/`. `GET /v1/stats` and
   `GET /v1/banks/:bank/stats` report model spend and HTTP totals for today /
   Monday week / calendar month (`docs/api/stats.md`); every request is
-  recorded by `httpStatsMiddleware`.
+  recorded by `httpStatsMiddleware`. `POST /v1/banks/:bank/ingestions`
+  accepts text/URL/file intake durably with `202` and status/history GETs
+  (`src/ingestions/`, contract in `docs/api/ingestions.md`); queued requests
+  live in `<MEMORY_BANK_ROOT>/.ingestion/` and hold archiving through durable
+  holds. No worker processes them yet.
 - `src/spend-ledger.ts` — append-only spend/HTTP journal at
   `<MEMORY_BANK_ROOT>/.accounting/ledger.jsonl`, idempotent per execution id;
   `recordAgentCall` wraps each pipeline's agent call. Costs are estimates from
