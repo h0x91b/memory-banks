@@ -5,7 +5,7 @@ and what to expect. Every `/v1` error uses one envelope: `{ "error": { "code", "
 
 | Step | Call | Contract |
 |---|---|---|
-| 1. Start the server | `npm run serve` (build + `dist/server.mjs` on port 47823) | `AGENTS.md` § Commands |
+| 1. Start the server | `npm run serve` (build + `dist/server.mjs` on fixed port 47823) | `AGENTS.md` § Commands |
 | 2. Create a bank | `POST /v1/banks` | `docs/api/banks.md` |
 | 3. Send material | `POST /v1/banks/:bank/ingestions` → `202` | `docs/api/ingestions.md` |
 | 4. Wait for processing | `GET /v1/banks/:bank/ingestions/:id` | `docs/api/ingestions.md`, `docs/design/ingestion-worker.md` |
