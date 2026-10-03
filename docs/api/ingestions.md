@@ -1,8 +1,8 @@
 # Ingestion API (`/v1/banks/:bank/ingestions`)
 
 Accept material for a bank **durably** and answer at once with `202 Accepted`. Nothing here runs a model, fetches a
-URL or writes into the bank: the request is stored in a queue outside the bank, and a separate worker processes it
-later through the store port described below.
+URL or writes into the bank: the request is stored in a queue outside the bank, and the ingestion worker started with the server processes it
+later through the store port described below (batching, retries and replay: `docs/design/ingestion-worker.md`).
 
 Code: `src/ingestions/` (`store.ts` storage + queue port, `router.ts` HTTP). Mounted in `.flue/app.ts` as
 `app.route('/v1', createIngestionsRouter(ingestionStore, bankRegistry))`; the store instance lives in

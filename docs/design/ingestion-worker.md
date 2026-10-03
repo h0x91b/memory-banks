@@ -101,8 +101,14 @@ holding the bank lock:
 
 ## Server lifecycle
 
-`startIngestionWorker(store, registry)` (`runtime.ts`) starts one worker per
+`.flue/app.ts` calls `startIngestionWorker(ingestionStore, bankRegistry)`
+(`runtime.ts`), and a `202` from the intake route nudges it (`notify`) so the
+bank's window is scheduled at once instead of on the next poll. It starts one worker per
 process (idempotent across dev re-imports), waits until the Flue runtime
 answers, recovers and schedules. SIGINT/SIGTERM stop scheduling immediately;
 a batch still running when the server exits is recovered by its lease on the
 next start. `MEMORY_BANK_INGESTION_WORKER=off` disables it.
+
+`test/ingestion-worker-built-server.test.ts` covers the built server end to end
+(202 queued -> succeeded with commits and revision, then SIGTERM) with a
+scripted model preloaded into the server process (`test/fixtures/openrouter-stub.mjs`).
