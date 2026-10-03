@@ -243,12 +243,14 @@ For production-style serving (skills, manual testing) use `npm run serve`, then 
 - **Version**: Flue 2.1.0 (`@flue/runtime`, `@flue/vite`, `@flue/cli`), the
   newest release available through the npm mirror used here. Agent code
   imports from `@flue/runtime`; `@flue/sdk` is now only an HTTP client.
-- **Model**: `openrouter/openai/gpt-5.6-luna` with `thinkingLevel: 'xhigh'`
-  (`src/model.ts`). It is in the OpenRouter catalog of the bundled
-  `@earendil-works/pi-ai` 0.83, so reasoning and pricing metadata are real and
-  the request carries `reasoning.effort: "xhigh"`. A model missing from the
-  catalog fails with `Unknown model ID` unless declared on a custom provider
-  (`setProvider(createProvider(...))`) with explicit metadata.
+- **Model**: `openrouter/openai/gpt-6-luna` with `thinkingLevel: 'xhigh'`
+  (`src/model.ts`). The `@earendil-works/pi-ai` 0.83 catalog bundled with
+  Flue 2.1.0 predates GPT-6 Luna, so `src/openrouter-provider.ts` re-registers
+  the `openrouter` provider with the catalog plus an explicitly declared
+  GPT-6 Luna record (reasoning, `xhigh` mapping, pricing copied from pi-ai
+  0.87.1). Without it the specifier fails with `Unknown model ID`; with it the
+  request carries `reasoning.effort: "xhigh"`. Remove that module once Flue
+  ships pi-ai >= 0.87.1 (Flue 2.2.0+).
 - **Agents are conversations**: an agent is a synchronous `'use agent'`
   function using hooks; work is sent with `init(Agent, { id }).dispatch()`
   and the reply read with `read()`. Instances persist by id, so every request
