@@ -100,7 +100,7 @@ export type IngestFn = (
   bank: string,
   item: IngestItem,
   opts?: { origin?: IngestOrigin },
-) => Promise<IngestResult & { rawName?: string; source?: unknown }>;
+) => Promise<Omit<IngestResult, 'rawName' | 'source'> & { rawName?: string; source?: unknown }>;
 /** Builds the batch's ingest commit message; `trailers` must stay its last paragraph. */
 export type IngestCommitFormatter = (
   entries: Array<{ rawName: string; source: unknown }>,

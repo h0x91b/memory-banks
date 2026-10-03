@@ -66,10 +66,12 @@ API, not here. A bank that is already `archived` or gone fails the batch
      `download_failed`, `download_too_large`.
    The original descriptor is passed to ingest as `origin` so provenance names
    the URL/filename, not the spool path.
-3. One ingest commit for the batch, ending with trailers
+3. One ingest commit for the batch: a `Sources:` list mapping each raw file to
+   its original source (`src/ingest-provenance.ts`), then the trailers
    `Ingestion-Batch: <token>` and one `Ingestion-Item: <request>/<index>` per
-   ingested item.
-4. One Librarian run over `fs/_raw/` (request hints joined).
+   ingested item as the final paragraph.
+4. One Librarian run over `fs/_raw/` (request hints joined); the batch's source
+   records and ingest commit are passed as run context into the briefing.
 5. On success the bank's HEAD becomes the completed revision; every request of
    the batch gets `commits` (ingest + curate short shas) and `revision`. If the
    Librarian run fails, ingested items are reported `failed` with

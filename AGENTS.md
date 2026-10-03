@@ -51,7 +51,12 @@ and commits via real git from the host side.
    the text directly; `kind: "path"` with a `file://` URI copies, with an
    `http(s)://` URI downloads. Filenames are sanitised and de-duplicated
    (`foo.md`, `foo-1.md`, ...).
-4. **Commit** the ingest step (`ingest: N item(s) into fs/_raw/`).
+4. **Commit** the ingest step (`ingest: N item(s) into fs/_raw/`). The body
+   lists each raw file with its observed source — one JSON record per line:
+   type (`inline`/`upload`/`file`/`url`/`unknown`), original URI or filename,
+   content type; credentials are redacted, unknown facts are left out
+   (`src/ingest-provenance.ts`). The same records go into the Librarian
+   briefing as read-only context; they are never written into bank files.
 5. **Short-circuit** if `fs/_raw/` is empty (no LLM call, return early).
 6. **Run the librarian**: the route sends the briefing to a fresh `Librarian`
    agent instance (`init(Librarian).dispatch()` + `read()`). The agent declares
