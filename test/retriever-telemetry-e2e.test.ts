@@ -75,10 +75,8 @@ function script(seen: { briefing?: string; toolResults?: string[] }) {
   return [
     toolUse([fx.fauxToolCall('read', { path: '/_index.md' })]),
     // Two calls in one turn: telemetry orders them by execution start.
-    // The built-in `glob` tool is left out on purpose: it runs
-    // `find ... 2>/dev/null`, and just-bash's ReadWriteFs turns that redirect
-    // into a real `fs/dev/null` file inside the bank, which would mask the
-    // "bank unchanged" check below. Its counting is covered by the unit test.
+    // The built-in `glob` tool's counting is covered by the unit test; its
+    // behaviour in the sandbox by sandbox-builtins-e2e.test.ts.
     toolUse([
       fx.fauxToolCall('grep', { pattern: 'Lisbon', path: '/people' }),
       fx.fauxToolCall('read', { path: '/notes/garden.md' }),
@@ -171,9 +169,7 @@ test('retriever telemetry records reads, searches and order without changing the
 
   // Tools really ran against the bank (the read result carries file content).
   assert.ok(seenA.toolResults!.some((r) => r.startsWith('read:') && r.includes('Lisbon')));
-  // (Not asserting on the grep result: in this sandbox the built-in `grep`
-  // tool falls back to `grep -rnH`, just-bash rejects `-H`, and Flue reports
-  // that failure as "No matches found." — a separate issue from telemetry.)
+  // (The grep result itself is asserted in sandbox-builtins-e2e.test.ts.)
 
   // Bank is byte-identical and git-clean.
   assert.equal(snapshot(), before);
