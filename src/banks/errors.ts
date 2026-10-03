@@ -14,9 +14,15 @@ export type ApiErrorCode =
   | 'bank_exists'
   | 'bank_archiving'
   | 'bank_archived'
+  | 'ingestion_not_found'
+  | 'idempotency_conflict'
+  | 'payload_too_large'
+  | 'unsupported_media_type'
   | 'internal_error';
 
-const STATUS: Record<ApiErrorCode, 400 | 404 | 409 | 500> = {
+export type ApiErrorStatus = 400 | 404 | 409 | 413 | 415 | 500;
+
+const STATUS: Record<ApiErrorCode, ApiErrorStatus> = {
   invalid_bank_id: 400,
   invalid_json: 400,
   validation_error: 400,
@@ -26,12 +32,16 @@ const STATUS: Record<ApiErrorCode, 400 | 404 | 409 | 500> = {
   bank_exists: 409,
   bank_archiving: 409,
   bank_archived: 409,
+  ingestion_not_found: 404,
+  idempotency_conflict: 409,
+  payload_too_large: 413,
+  unsupported_media_type: 415,
   internal_error: 500,
 };
 
 export class ApiError extends Error {
   readonly code: ApiErrorCode;
-  readonly status: 400 | 404 | 409 | 500;
+  readonly status: ApiErrorStatus;
   readonly details?: Record<string, unknown>;
 
   constructor(code: ApiErrorCode, message: string, details?: Record<string, unknown>) {
