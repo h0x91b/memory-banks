@@ -3,6 +3,7 @@ import type { BashFactory, BashLike } from '@flue/runtime';
 import type { FlueLogger } from './log-types.js';
 import { logLine, preview } from './console-log.js';
 import { DevNullFs } from './dev-null-fs.js';
+import { documentCommands } from './sandbox-documents.js';
 
 /**
  * Heuristic: rewrite `grep ... 'a|b'` into `grep -E ... 'a|b'`.
@@ -80,6 +81,7 @@ export function createBankBashFactory({ bank, bankFsPath, log, onExec }: BashFac
     const bash = new Bash({
       fs,
       cwd: '/',
+      customCommands: documentCommands,
       executionLimits: {
         maxCallDepth: 50,
         maxCommandCount: 5000,
