@@ -58,8 +58,34 @@ export async function runRetriever(payload: RetrieverPayload | undefined, runId:
     };
   }
 
+  return runRetrieverAt({ bank, question, hint: payload?.hint, readRoot: fsPath, fsPath, repoPath }, runId, t0);
+}
+
+export interface RetrieverReadTarget {
+  bank: string;
+  question: string;
+  hint?: string;
+  /** Directory the agent's sandbox and the briefing read: the live fs/, or an immutable snapshot of it. */
+  readRoot: string;
+  /** The bank's real fs/ path: shown to the model as the host prefix and used for references. */
+  fsPath: string;
+  /** Bank repo for the post-run read-only check; null when readRoot is not the live tree. */
+  repoPath: string | null;
+}
+
+/**
+ * Internal seam for the query API (src/query/): run the retriever against
+ * `readRoot` while the model and the references only ever see the real bank
+ * path. Not reachable from HTTP input; callers pick readRoot themselves.
+ */
+export async function runRetrieverAt(target: RetrieverReadTarget, runId: string, t0 = Date.now()) {
+  const { bank, question, readRoot, fsPath, repoPath } = target;
+  const ms = (since: number) => `${Date.now() - since}ms`;
+  const banklog = bankLogger(bank);
+  if (readRoot !== fsPath) banklog('retriever', `reading snapshot ${readRoot}`, 'blue');
+
   banklog('retriever', `LLM init: ${MODEL}`, 'blue');
-  const bankBriefing = await buildBankBriefing(fsPath, { role: 'retriever' });
+  const bankBriefing = await buildBankBriefing(readRoot, { role: 'retriever' });
   banklog('retriever', `briefing: ${summarizeBriefing(bankBriefing)}`, 'blue');
   for (const d of bankBriefing.diagnostics) {
     banklog('retriever', `briefing ${d.code}: ${d.message}`, 'yellow');
@@ -68,7 +94,7 @@ export async function runRetriever(payload: RetrieverPayload | undefined, runId:
     bank,
     question,
     fsPath,
-    hint: payload?.hint,
+    hint: target.hint,
     bankBriefing: bankBriefing.text,
   });
   banklog('retriever', `LLM call (prompt=${briefing.length}B)`, 'blue');
@@ -85,7 +111,7 @@ export async function runRetriever(payload: RetrieverPayload | undefined, runId:
         const agent = init(Retriever, { id: instanceId });
         const receipt = await agent.dispatch({
           message: { kind: 'user', body: briefing },
-          initialData: { bank, fsPath },
+          initialData: { bank, fsPath: readRoot },
         });
         reply = await agent.read(receipt);
       } finally {
@@ -114,7 +140,7 @@ export async function runRetriever(payload: RetrieverPayload | undefined, runId:
 
   const references = data.references.map((r) => normalizeReference(r, fsPath));
 
-  const changes = await readGitChanges(repoPath).catch(() => []);
+  const changes = repoPath ? await readGitChanges(repoPath).catch(() => []) : [];
   if (changes.length > 0) {
     banklog('retriever', `WARN: retriever made ${changes.length} unexpected change(s) — read-only violated`, 'red');
   }
