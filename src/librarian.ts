@@ -3,6 +3,12 @@ import fs from 'node:fs/promises';
 import { init } from '@flue/runtime';
 import { BANK_NAME_RE, ensureBank } from './bank.js';
 import { ingestOne, type IngestItem } from './ingest.js';
+import {
+  formatIngestCommitMessage,
+  formatProvenanceForBriefing,
+  toIngestSource,
+  type IngestProvenance,
+} from './ingest-provenance.ts';
 import { gitCommitAll, gitEnsureRepo } from './git.js';
 import { readGitChanges, type Change } from './changes.js';
 import { sweepRawToUnsorted } from './sweep.js';
@@ -28,7 +34,21 @@ export interface LibrarianPayload {
   hint?: string;
 }
 
-export async function runLibrarian(payload: LibrarianPayload | undefined, runId: string) {
+/**
+ * Internal (not an HTTP field): provenance of items ingested by the caller
+ * before this run, e.g. the ingestion worker. Shown to the Librarian as
+ * host-recorded context next to whatever this run ingests itself.
+ */
+export interface LibrarianRunContext {
+  provenance?: Array<{ rawName: string; source: unknown }>;
+  ingestCommit?: string | null;
+}
+
+export async function runLibrarian(
+  payload: LibrarianPayload | undefined,
+  runId: string,
+  context: LibrarianRunContext = {},
+) {
   const bank = payload?.bank?.trim();
   if (!bank) throw new RequestError('payload.bank is required');
   if (!BANK_NAME_RE.test(bank)) {
@@ -46,17 +66,17 @@ export async function runLibrarian(payload: LibrarianPayload | undefined, runId:
   await gitEnsureRepo(repoPath);
   banklog('librarian', `bank ${created ? 'CREATED' : 'ready'} at ${fsPath}`, 'blue');
 
-  const ingested: string[] = [];
+  const ingested: IngestProvenance[] = [];
   if (items.length > 0) {
     banklog('librarian', `ingest ${items.length} item(s) → fs/_raw/`, 'blue');
     for (let i = 0; i < items.length; i++) {
       const res = await ingestOne(bank, items[i]);
-      ingested.push(res.sourceLabel);
+      ingested.push({ rawName: res.rawName, source: res.source });
       banklog('ingest', `${i + 1}/${items.length} ${res.sourceLabel}`, 'green');
     }
   }
   const ingestCommit = ingested.length
-    ? await gitCommitAll(repoPath, `ingest: ${ingested.length} item(s) into fs/_raw/`)
+    ? await gitCommitAll(repoPath, formatIngestCommitMessage(ingested))
     : null;
   if (ingestCommit) {
     banklog('git', `commit ${ingestCommit} (ingest)`, 'yellow');
@@ -95,7 +115,8 @@ export async function runLibrarian(payload: LibrarianPayload | undefined, runId:
   for (const d of bankBriefing.diagnostics) {
     banklog('briefing', `  [${d.code}] ${d.message}`, 'yellow');
   }
-  const briefing = buildBriefing(bank, rawEntries, rawFileCount, payload?.hint, bankBriefing.text);
+  const provenanceSection = briefingProvenance(rawEntries, ingested, ingestCommit, context);
+  const briefing = buildBriefing(bank, rawEntries, rawFileCount, payload?.hint, bankBriefing.text, provenanceSection);
   banklog('librarian', `LLM call (prompt=${briefing.length}B, raw_entries=${rawEntries.length}, raw_files=${rawFileCount})`, 'blue');
   const tLlm = Date.now();
   const instanceId = freshInstanceId('librarian', runId);
@@ -280,12 +301,30 @@ function splitChanges(changes: Change[]): {
   return { processed, skipped };
 }
 
+/**
+ * Provenance of this run's own ingest plus whatever the caller ingested before
+ * it, limited to files still at the top level of _raw/ — nothing is claimed
+ * for a file the Librarian cannot see.
+ */
+function briefingProvenance(
+  rawEntries: RawEntry[],
+  ownEntries: IngestProvenance[],
+  ownCommit: string | null,
+  context: LibrarianRunContext,
+): string {
+  const present = new Set(rawEntries.filter((e) => e.kind === 'file').map((e) => e.name));
+  const fromCaller = (context.provenance ?? []).map((p) => ({ rawName: p.rawName, source: toIngestSource(p.source) }));
+  const entries = [...fromCaller, ...ownEntries].filter((p) => present.has(p.rawName));
+  return formatProvenanceForBriefing(entries, ownCommit ?? context.ingestCommit ?? null);
+}
+
 function buildBriefing(
   bank: string,
   rawEntries: RawEntry[],
   totalFiles: number,
   hint: string | undefined,
   bankBriefing: string,
+  provenanceSection: string,
 ): string {
   const parts: string[] = [];
   parts.push(`# Curate memory bank \`${bank}\``);
@@ -301,6 +340,10 @@ function buildBriefing(
     }
   }
   parts.push('');
+  if (provenanceSection) {
+    parts.push(provenanceSection);
+    parts.push('');
+  }
   if (hint && hint.trim()) {
     parts.push('## Hint from the user');
     parts.push(hint.trim());
