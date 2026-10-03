@@ -2,6 +2,7 @@ import { Bash, ReadWriteFs } from 'just-bash';
 import type { BashFactory, BashLike } from '@flue/runtime';
 import type { FlueLogger } from './log-types.js';
 import { logLine, preview } from './console-log.js';
+import { DevNullFs } from './dev-null-fs.js';
 
 /**
  * Heuristic: rewrite `grep ... 'a|b'` into `grep -E ... 'a|b'`.
@@ -31,6 +32,28 @@ export function maybeUpgradeGrep(cmd: string): string {
   return cmd.replace(/\bgrep\b/, 'grep -E');
 }
 
+/**
+ * Make Flue's built-in `grep` tool work on just-bash.
+ *
+ * Flue probes `rg --version` once per sandbox; just-bash's `rg` has no
+ * `--version` (nor the `--color never` Flue would pass next), so the probe
+ * fails and Flue falls back to `grep -rnH -E|-F -- <pattern> <path>`.
+ * just-bash's `grep` rejects `-H` with exit 1 and empty stdout, which Flue
+ * reads as "No matches found." for every search.
+ *
+ * In just-bash `grep -r` already prefixes each match with its file name, even
+ * for a single file, so dropping `H` keeps Flue's `path:line:text` output.
+ * Only that exact generated prefix is rewritten; anything the model types
+ * through the `bash` tool reaches just-bash unchanged, error included.
+ *
+ * Staying on the `grep` fallback (rather than faking the `rg` probe) is
+ * deliberate: just-bash's `rg` is smart-case and honours .gitignore, which
+ * would silently change what the built-in tool matches.
+ */
+export function adaptFlueGrepFallback(cmd: string): string {
+  return cmd.replace(/^grep -rnH (?=-[EF] )/, 'grep -rn ');
+}
+
 export interface BashFactoryDeps {
   /** Bank name — used to prefix stderr log lines so multi-bank runs are distinguishable. */
   bank: string;
@@ -53,7 +76,7 @@ export interface BashFactoryDeps {
  */
 export function createBankBashFactory({ bank, bankFsPath, log, onExec }: BashFactoryDeps): BashFactory {
   return () => {
-    const fs = new ReadWriteFs({ root: bankFsPath });
+    const fs = new DevNullFs(new ReadWriteFs({ root: bankFsPath }));
     const bash = new Bash({
       fs,
       cwd: '/',
@@ -69,16 +92,19 @@ export function createBankBashFactory({ bank, bankFsPath, log, onExec }: BashFac
       exec: async (command, options) => {
         execIndex += 1;
         const idx = execIndex;
-        const upgraded = maybeUpgradeGrep(command);
-        const effective = upgraded !== command ? upgraded : command;
-        const script = preview(effective);
-        log?.info('bash.call', { index: idx, script, upgraded: upgraded !== command });
-        if (upgraded !== command) {
+        const adapted = adaptFlueGrepFallback(command);
+        const upgraded = maybeUpgradeGrep(adapted);
+        const script = preview(upgraded);
+        log?.info('bash.call', { index: idx, script, upgraded: upgraded !== adapted });
+        if (adapted !== command) {
+          logLine('bash.fix', `#${idx} grep -rnH -> grep -rn (just-bash has no -H)`, 'yellow', bank);
+        }
+        if (upgraded !== adapted) {
           logLine('bash.fix', `#${idx} grep -> grep -E (alternation detected)`, 'yellow', bank);
         }
         logLine('bash', `#${idx} $ ${script}`, 'cyan', bank);
         const t0 = Date.now();
-        const result = await bash.exec(effective, {
+        const result = await bash.exec(upgraded, {
           cwd: options?.cwd,
           env: options?.env,
           signal: options?.signal,
