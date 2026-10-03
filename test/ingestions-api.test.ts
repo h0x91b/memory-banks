@@ -350,6 +350,129 @@ test('hint: survives a restart and reaches a claim made by another process', asy
   assert.deepEqual(await child('claim-hints', 'notes'), [{ id: a.body.id, hint: 'prep for Monday' }]);
 });
 
+// ---- immediate -------------------------------------------------------------------
+
+test('immediate: JSON boolean and one multipart field; stored and shown only when true; claimed with its request', async () => {
+  const yes = await post({ immediate: true, items: [{ type: 'text', text: 'now' }] });
+  assert.equal(yes.status, 202, JSON.stringify(yes.body));
+  assert.equal(yes.body.status, 'queued', 'still asynchronous: 202 queued, nothing processed in POST');
+  const no = await post({ immediate: false, items: [{ type: 'text', text: 'later' }] });
+  const absent = await post({ items: [{ type: 'text', text: 'default' }] });
+  const formYes = new FormData();
+  formYes.append('text', 'multipart now');
+  formYes.append('immediate', 'true');
+  const multiYes = await send('POST', '/v1/banks/notes/ingestions', { body: formYes });
+  assert.equal(multiYes.status, 202, JSON.stringify(multiYes.body));
+  const formNo = new FormData();
+  formNo.append('text', 'multipart later');
+  formNo.append('immediate', 'false');
+  const multiNo = await send('POST', '/v1/banks/notes/ingestions', { body: formNo });
+  assert.equal(multiNo.status, 202, JSON.stringify(multiNo.body));
+
+  for (const r of [yes, multiYes]) assert.equal((await send('GET', r.body.status_url)).body.immediate, true);
+  for (const r of [no, absent, multiNo]) {
+    const got = (await send('GET', r.body.status_url)).body;
+    assert.ok(!('immediate' in got), 'default -> field omitted');
+    const stored = JSON.parse(await fs.readFile(path.join(reqDir('notes', r.body.id), 'request.json'), 'utf8'));
+    assert.ok(!('immediate' in stored), 'default -> not written to request.json');
+  }
+
+  assert.deepEqual(await store.pendingBanks(), [
+    { bank: 'notes', firstQueuedAt: (await store.get('notes', yes.body.id))!.createdAt, immediate: true },
+  ]);
+  const claim = await store.claimBatch({ bank: 'notes', workerId: 'w', leaseMs: 60_000 });
+  assert.deepEqual(
+    claim!.requests.map((r) => r.immediate ?? false),
+    [true, false, false, true, false],
+    'one batch takes every queued request, immediate or not',
+  );
+  assert.deepEqual(await store.pendingBanks(), [], 'nothing queued once claimed');
+});
+
+test('immediate: strict parsing, 400 and nothing stored', async () => {
+  const items = [{ type: 'text', text: 'x' }];
+  for (const immediate of ['true', 1, 0, null, 'yes', ['true'], { on: true }]) {
+    const res = await post({ immediate, items });
+    assertError(res, 400, 'validation_error');
+    assert.equal(res.body.error.details.field, 'immediate');
+  }
+  for (const value of ['TRUE', '1', 'yes', '', ' true']) {
+    const form = new FormData();
+    form.append('text', 'x');
+    form.append('immediate', value);
+    assertError(await send('POST', '/v1/banks/notes/ingestions', { body: form }), 400, 'validation_error');
+  }
+  const twice = new FormData();
+  twice.append('text', 'x');
+  twice.append('immediate', 'true');
+  twice.append('immediate', 'true');
+  assertError(await send('POST', '/v1/banks/notes/ingestions', { body: twice }), 400, 'validation_error');
+  const asFile = new FormData();
+  asFile.append('text', 'x');
+  asFile.append('immediate', new File(['true'], 'flag.txt', { type: 'text/plain' }));
+  assertError(await send('POST', '/v1/banks/notes/ingestions', { body: asFile }), 400, 'validation_error');
+
+  assert.equal((await store.list('notes')).ingestions.length, 0);
+  assert.deepEqual(await registry.listDurableWork('notes'), []);
+});
+
+test('immediate: part of the Idempotency-Key fingerprint; false keeps the pre-immediate fingerprint', async () => {
+  const items = [{ type: 'text', text: 'same bytes' }];
+  const first = await post({ immediate: true, items }, { 'Idempotency-Key': 'i-1' });
+  assert.equal(first.status, 202);
+  const again = await post({ immediate: true, items }, { 'Idempotency-Key': 'i-1' });
+  assert.equal(again.body.id, first.body.id);
+  assert.equal(again.headers.get('idempotent-replayed'), 'true');
+  const otherIntent = await post({ items }, { 'Idempotency-Key': 'i-1' });
+  assertError(otherIntent, 409, 'idempotency_conflict');
+  assertError(await post({ immediate: false, items }, { 'Idempotency-Key': 'i-1' }), 409, 'idempotency_conflict');
+
+  const plain = await post({ items }, { 'Idempotency-Key': 'i-2' });
+  assert.equal((await post({ immediate: false, items }, { 'Idempotency-Key': 'i-2' })).body.id, plain.body.id, 'false = absent');
+  assertError(await post({ immediate: true, items }, { 'Idempotency-Key': 'i-2' }), 409, 'idempotency_conflict');
+  const stored = JSON.parse(await fs.readFile(path.join(reqDir('notes', plain.body.id), 'request.json'), 'utf8'));
+  const preImmediate = sha(
+    canonicalJson({
+      metadata: null,
+      items: [{ kind: 'text', sha256: sha('same bytes'), filename: null, mediaType: 'text/plain', url: null, metadata: null }],
+    }),
+  );
+  assert.equal(stored.fingerprint, preImmediate, 'keys stored before immediate existed still replay');
+});
+
+test('immediate: a replayed terminal request does not make the bank immediate', async () => {
+  const items = [{ type: 'text', text: 'urgent' }];
+  const first = await post({ immediate: true, items }, { 'Idempotency-Key': 'i-done' });
+  const claim = await store.claimBatch({ bank: 'notes', workerId: 'w', leaseMs: 60_000 });
+  await store.complete(
+    claim!,
+    claim!.requests.map((r) => ({ requestId: r.id, items: r.items.map((i) => ({ index: i.index, status: 'succeeded' as const })) })),
+  );
+  const later = await post({ items: [{ type: 'text', text: 'unrelated' }] });
+  const replay = await post({ immediate: true, items }, { 'Idempotency-Key': 'i-done' });
+  assert.equal(replay.body.id, first.body.id);
+  assert.equal(replay.body.status, 'succeeded');
+  const pending = await store.pendingBanks();
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].immediate, undefined, 'only the unrelated, non-immediate request is queued');
+  assert.equal(pending[0].firstQueuedAt, (await store.get('notes', later.body.id))!.createdAt);
+});
+
+test('immediate: survives a restart, replays across processes, and holds archive like any queued request', async () => {
+  const a = await child('post-immediate', 'notes', 'from process A');
+  assert.equal(a.status, 202, JSON.stringify(a.body));
+  assert.equal((await child('post-immediate', 'notes', 'from process A')).body.id, a.body.id, 'replayed after restart');
+  const pending = await child('pending', 'notes');
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].immediate, true, 'a fresh process still sees the immediate intent');
+
+  assert.equal((await send('POST', '/v1/banks/notes/archive')).body.status, 'archiving', 'durable hold keeps archive waiting');
+  assertError(await post({ immediate: true, items: [{ type: 'text', text: 'new' }] }), 409, 'bank_archiving');
+  const drained = await child('drain', 'notes');
+  assert.equal(drained.drained, 1);
+  assert.equal(drained.bank.status, 'archived');
+});
+
 // ---- archive retention --------------------------------------------------------------
 
 test('archive waits for queued work across restarts and settles when the worker completes', async () => {

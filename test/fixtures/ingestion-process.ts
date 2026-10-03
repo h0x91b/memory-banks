@@ -30,6 +30,14 @@ switch (action) {
       'Idempotency-Key': 'restart-key',
     });
     break;
+  case 'post-immediate':
+    out = await http('POST', `/v1/banks/${bank}/ingestions`, { items: [{ type: 'text', text: arg }], immediate: true }, {
+      'Idempotency-Key': 'restart-immediate',
+    });
+    break;
+  case 'pending':
+    out = await store.pendingBanks();
+    break;
   case 'get-bank':
     await store.recover(bank);
     out = await http('GET', `/v1/banks/${bank}`);

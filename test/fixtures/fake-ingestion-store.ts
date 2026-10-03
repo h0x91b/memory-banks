@@ -17,6 +17,7 @@ export interface FakeRequest {
   attempts: number;
   metadata?: Record<string, unknown>;
   hint?: string;
+  immediate?: boolean;
   items: QueuedItem[];
   bytes: Map<number, Buffer>;
   status: 'queued' | 'running' | 'succeeded' | 'partial' | 'failed';
@@ -42,7 +43,7 @@ export class FakeIngestionStore implements IngestionWorkPort {
   enqueue(
     bank: string,
     items: Array<QueuedItem & { content?: string }>,
-    options: { id?: string; metadata?: Record<string, unknown>; hint?: string; attempts?: number; at?: number } = {},
+    options: { id?: string; metadata?: Record<string, unknown>; hint?: string; immediate?: boolean; attempts?: number; at?: number } = {},
   ): FakeRequest {
     const id = options.id ?? `req-${randomUUID().slice(0, 8)}`;
     const bytes = new Map<number, Buffer>();
@@ -57,6 +58,7 @@ export class FakeIngestionStore implements IngestionWorkPort {
       attempts: options.attempts ?? 0,
       metadata: options.metadata,
       ...(options.hint ? { hint: options.hint } : {}),
+      ...(options.immediate ? { immediate: true } : {}),
       items: descriptors,
       bytes,
       status: 'queued',
@@ -70,12 +72,16 @@ export class FakeIngestionStore implements IngestionWorkPort {
 
   async pendingBanks() {
     const first = new Map<string, string>();
+    const immediate = new Set<string>();
     for (const r of this.requests.values()) {
       if (r.status !== 'queued') continue;
       const cur = first.get(r.bank);
       if (!cur || r.createdAt < cur) first.set(r.bank, r.createdAt);
+      if (r.immediate) immediate.add(r.bank);
     }
-    return [...first].map(([bank, firstQueuedAt]) => ({ bank, firstQueuedAt }));
+    return [...first].map(([bank, firstQueuedAt]) =>
+      immediate.has(bank) ? { bank, firstQueuedAt, immediate: true } : { bank, firstQueuedAt },
+    );
   }
 
   async claimBatch({ bank, workerId, leaseMs }: { bank: string; workerId: string; leaseMs: number }) {
@@ -101,6 +107,7 @@ export class FakeIngestionStore implements IngestionWorkPort {
         attempts: r.attempts,
         metadata: r.metadata,
         hint: r.hint,
+        ...(r.immediate ? { immediate: true } : {}),
         items: r.items,
       })),
     };

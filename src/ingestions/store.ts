@@ -85,6 +85,8 @@ export interface IngestionRecord {
   metadata: Record<string, unknown> | null;
   /** Caller hint for the Librarian; absent (not null) when the request had none. */
   hint?: string;
+  /** The caller asked to skip the bank's batch window; absent (not false) when it did not. */
+  immediate?: true;
   items: IngestionItem[];
   /** Bank revision (git commit) the worker produced; null until completed. */
   revision: string | null;
@@ -123,6 +125,8 @@ export interface AcceptInput {
   metadata?: Record<string, unknown> | null;
   /** Caller context for the Librarian. Trimmed; blank means none. */
   hint?: string | null;
+  /** Make the bank's next batch eligible now instead of when its window closes. */
+  immediate?: boolean;
   idempotencyKey?: string | null;
 }
 
@@ -151,6 +155,7 @@ export interface IngestionBatchClaim {
     attempts: number;
     metadata: Record<string, unknown> | null;
     hint?: string;
+    immediate?: true;
     items: ItemDescriptor[];
   }>;
 }
@@ -188,8 +193,8 @@ export class IngestionClaimLost extends Error {
  * BankLifecycleGuard.beginOperation for it.
  */
 export interface IngestionWorkQueue {
-  /** Banks with at least one queued request, and when their oldest one was accepted. */
-  pendingBanks(): Promise<Array<{ bank: string; firstQueuedAt: string }>>;
+  /** Banks with at least one queued request, when their oldest one was accepted, and whether one asked for `immediate`. */
+  pendingBanks(): Promise<Array<{ bank: string; firstQueuedAt: string; immediate?: true }>>;
   pendingCounts(bank: string): Promise<{ queued: number; running: number }>;
   /** Every queued request of the bank -> running under one fencing token. Null when none queued. */
   claimBatch(options: { bank: string; workerId: string; leaseMs: number }): Promise<IngestionBatchClaim | null>;
@@ -291,7 +296,8 @@ export class IngestionStore implements IngestionWorkQueue {
     const bank = input.bank;
     const items = input.items.map((item) => ({ ...item, sha256: item.bytes ? sha256(item.bytes) : null }));
     const hint = input.hint?.trim() || undefined;
-    const fingerprint = fingerprintOf(input.metadata ?? null, hint, items);
+    const immediate = input.immediate === true || undefined;
+    const fingerprint = fingerprintOf(input.metadata ?? null, hint, immediate, items);
     const key = input.idempotencyKey ?? null;
 
     if (key) {
@@ -318,6 +324,8 @@ export class IngestionStore implements IngestionWorkQueue {
       metadata: input.metadata ?? null,
       // Omitted when absent, so records without a hint keep their old shape.
       ...(hint ? { hint } : {}),
+      // Same: only an immediate request carries the field.
+      ...(immediate ? { immediate } : {}),
       items: items.map((item, index) => ({
         index,
         kind: item.kind,
@@ -447,15 +455,23 @@ export class IngestionStore implements IngestionWorkQueue {
     return counts;
   }
 
-  async pendingBanks(): Promise<Array<{ bank: string; firstQueuedAt: string }>> {
-    const out: Array<{ bank: string; firstQueuedAt: string }> = [];
+  /**
+   * `immediate` is set when any queued request of the bank asked for it. It is
+   * read from the stored requests, so it survives a restart and a replayed
+   * terminal request never sets it.
+   */
+  async pendingBanks(): Promise<Array<{ bank: string; firstQueuedAt: string; immediate?: true }>> {
+    const out: Array<{ bank: string; firstQueuedAt: string; immediate?: true }> = [];
     for (const bank of await this.banks()) {
       await this.recover(bank);
       let first: string | null = null;
+      let immediate = false;
       for (const stored of await this.readAll(bank)) {
-        if (stored.status === 'queued' && (first === null || stored.createdAt < first)) first = stored.createdAt;
+        if (stored.status !== 'queued') continue;
+        if (first === null || stored.createdAt < first) first = stored.createdAt;
+        if (stored.immediate === true) immediate = true;
       }
-      if (first) out.push({ bank, firstQueuedAt: first });
+      if (first) out.push(immediate ? { bank, firstQueuedAt: first, immediate: true } : { bank, firstQueuedAt: first });
     }
     return out.sort((a, b) => a.firstQueuedAt.localeCompare(b.firstQueuedAt));
   }
@@ -495,6 +511,7 @@ export class IngestionStore implements IngestionWorkQueue {
           attempts: next.attempts,
           metadata: next.metadata,
           ...(typeof next.hint === 'string' && next.hint ? { hint: next.hint } : {}),
+          ...(next.immediate === true ? { immediate: true as const } : {}),
           items: next.items.map(descriptor),
         });
       }
@@ -742,16 +759,18 @@ function sha256(bytes: Buffer): string {
 }
 
 /** Payload identity for Idempotency-Key: everything the client sent, content by hash. */
-// An absent hint is left out (canonicalJson drops undefined), so requests
-// without one keep the fingerprints they had before hints existed.
+// An absent hint or immediate:false is left out (canonicalJson drops
+// undefined), so such requests keep the fingerprints they had before.
 function fingerprintOf(
   metadata: Record<string, unknown> | null,
   hint: string | undefined,
+  immediate: true | undefined,
   items: Array<NewItem & { sha256: string | null }>,
 ): string {
   const canonical = canonicalJson({
     metadata,
     hint,
+    immediate,
     items: items.map((i) => ({
       kind: i.kind,
       sha256: i.sha256,

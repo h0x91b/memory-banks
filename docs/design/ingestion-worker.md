@@ -17,6 +17,15 @@ and completed revision).
   from their own arrival, so if it already elapsed the next batch starts right
   after the current one.
 - Different banks are independent and run in parallel.
+- `immediate: true` on a request skips the window for the bank's **next
+  batch**: once any queued request of the bank carries it, the batch is
+  eligible now and claims everything queued, older non-immediate requests
+  included. A bank that is running a batch still waits for it to release the
+  lock; then the next batch starts right away. Nothing is cancelled or
+  preempted, and there is still one run per bank. The flag lives in the stored
+  request, so a restart (or a reaped, interrupted batch) keeps it; an
+  idempotent replay of a finished request is not queued work and cannot flush
+  anything.
 
 ## One writer per bank
 

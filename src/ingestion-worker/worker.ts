@@ -8,7 +8,11 @@
 //     request queued at that moment as one batch (the batch closes at run start);
 //   - requests arriving while the batch runs stay queued and open the next
 //     window, measured from their own arrival — if it already elapsed, the next
-//     batch starts right after the current one.
+//     batch starts right after the current one;
+//   - a queued request with `immediate: true` makes the bank's next batch
+//     eligible now (an open window is cut short; everything queued joins it).
+//     A busy bank still waits for its running batch: never two runs per bank,
+//     nothing is cancelled or preempted.
 //
 // Exclusion: a batch runs inside `withBankMutation`, the same lock the legacy
 // HTTP/CLI Librarian takes, so two runs of one bank never overlap in the
@@ -39,6 +43,7 @@ import {
   type BatchClaim,
   type IngestionWorkPort,
   type ItemOutcome,
+  type PendingBank,
   type QueuedItem,
   type QueuedRequest,
   type RequestOutcome,
@@ -123,8 +128,13 @@ export interface QueueTiming {
   windowMs: number;
   /** Arrival of the bank's oldest queued request (ISO), null when nothing is queued. */
   firstQueuedAt: string | null;
-  /** When that request's fixed window closes (ISO): the earliest the batch can start. */
+  /**
+   * Earliest the bank's next batch can start (ISO): when the fixed window
+   * closes, or already now when a queued request asked for `immediate`.
+   */
   eligibleAt: string | null;
+  /** A queued request of the bank asked for `immediate`: the window is skipped. */
+  immediate: boolean;
   /** A batch of this bank is running now; the next one waits for it. */
   batchRunning: boolean;
 }
@@ -156,7 +166,8 @@ export class IngestionWorker {
   private readonly o: Required<
     Omit<IngestionWorkerOptions, 'bankStatus' | 'workerId' | 'heartbeatMs' | 'formatIngestCommit'>
   > & { bankStatus?: BankStatusFn; heartbeatMs: number; formatIngestCommit: IngestCommitFormatter };
-  private readonly windows = new Map<string, unknown>();
+  /** Armed window timers per bank, with the epoch ms they fire at. */
+  private readonly windows = new Map<string, { handle: unknown; at: number }>();
   private readonly running = new Map<string, Promise<void>>();
   private pollTimer: unknown = null;
   private scanning: Promise<void> | null = null;
@@ -206,7 +217,7 @@ export class IngestionWorker {
    */
   async stop(): Promise<void> {
     this.stopped = true;
-    for (const handle of this.windows.values()) this.o.clock.clearTimeout(handle);
+    for (const { handle } of this.windows.values()) this.o.clock.clearTimeout(handle);
     this.windows.clear();
     if (this.pollTimer) this.o.clock.clearTimeout(this.pollTimer);
     this.pollTimer = null;
@@ -264,15 +275,27 @@ export class IngestionWorker {
     // a reaped one could only rerun after it releases the bank lock anyway.
     const reaped = await this.o.store.reapExpired(this.o.clock.now());
     if (reaped) this.o.log(`re-queued ${reaped} request(s) from expired claims`);
-    for (const { bank, firstQueuedAt } of await this.o.store.pendingBanks()) {
-      if (this.windows.has(bank) || this.running.has(bank)) continue;
-      const delay = Math.max(0, this.windowClosesAt(firstQueuedAt) - this.o.clock.now());
+    for (const pending of await this.o.store.pendingBanks()) {
+      const { bank } = pending;
+      // A running bank is rescanned when its batch releases the lock.
+      if (this.running.has(bank)) continue;
+      const at = this.eligibleAt(pending);
+      const armed = this.windows.get(bank);
+      // An armed window only moves earlier (an immediate arrival), never later.
+      if (armed && armed.at <= at) continue;
+      if (armed) this.o.clock.clearTimeout(armed.handle);
       const handle = this.o.clock.setTimeout(() => {
         this.windows.delete(bank);
         this.launch(bank);
-      }, delay);
-      this.windows.set(bank, handle);
+      }, Math.max(0, at - this.o.clock.now()));
+      this.windows.set(bank, { handle, at });
     }
+  }
+
+  /** Epoch ms the bank's next batch may start: window close, or now for an immediate request. */
+  private eligibleAt(pending: PendingBank): number {
+    const closes = this.windowClosesAt(pending.firstQueuedAt);
+    return pending.immediate ? Math.min(closes, this.o.clock.now()) : closes;
   }
 
   /** When the fixed window opened by the bank's oldest queued arrival closes (epoch ms). */
@@ -291,7 +314,8 @@ export class IngestionWorker {
     return {
       windowMs: this.o.windowMs,
       firstQueuedAt: pending?.firstQueuedAt ?? null,
-      eligibleAt: pending ? new Date(this.windowClosesAt(pending.firstQueuedAt)).toISOString() : null,
+      eligibleAt: pending ? new Date(this.eligibleAt(pending)).toISOString() : null,
+      immediate: pending?.immediate === true,
       batchRunning: this.running.has(bank),
     };
   }
