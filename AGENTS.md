@@ -122,6 +122,12 @@ and commits via real git from the host side.
 - `src/git.ts` — `git init` + autocommits at the repo root (`<bank>/`).
 - `src/bash-factory.ts` — wraps `just-bash` (`ReadWriteFs` rooted at
   `<bank>/fs/`) into a Flue `BashFactory`.
+- `src/sandbox-documents.ts` — sandbox commands just-bash lacks: `unzip`
+  (list/extract stored+deflate ZIPs; skips `..`/absolute/symlink/encrypted
+  entries; caps archive size, entry count, per-file and total decompressed
+  bytes; never expands nested archives) and `pdftotext` (text per page with
+  `--- page N of M ---` markers via `unpdf`/pdf.js, loaded lazily; exit 3 and
+  no output for scanned/image-only PDFs, no OCR). `tar` is just-bash's own.
 - `src/changes.ts` — parse `git status --porcelain` output and strip the
   `fs/` prefix so reports talk in agent-side paths.
 - `src/sweep.ts` — move leftover `fs/_raw/` files into `fs/_unsorted/`.
