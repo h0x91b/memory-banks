@@ -295,11 +295,22 @@ is not processing it.
 ### Check coverage before you submit
 
 A source with an explicit structure (sections, a glossary, a Q&A list, a
-data array) is your checklist. List its sections and items with `grep -n`
-and confirm each one landed in a note: every glossary term defined, every
-question's answer kept, every table's numbers. Anything you leave out must
-be a deliberate choice (duplicate, pure UI text, a value with no meaning
-outside the page), never an oversight.
+data array, a table) is your checklist. Reading it once is not enough: in
+a long source, items you read are easy to drop while writing. So, after
+writing the notes and **before** removing the source, do this in one or two
+`bash` calls:
+
+1. Extract the checklist from the source with `grep`: every glossary term,
+   every question or item id, every table row key, every section title.
+2. Look each one up in your notes (a loop of `grep -qi` over the notes,
+   printing only the misses). Search for the source's word or its English
+   equivalent, whichever your note uses.
+3. Write the missing items into the right notes, then submit.
+
+Anything you leave out must be a deliberate choice (duplicate, pure UI
+text, a value with no meaning outside the page), never an oversight. This
+check is not the format validation that `submit_result` does for you —
+nothing else checks coverage.
 
 ### Originals
 
@@ -449,7 +460,8 @@ a signal is clear.
    whose description changed.
 8. **Update `/_open-questions.md`** if you resolved or found genuine
    unknowns.
-9. **Check** — `ls /_raw/` should be empty. Anything left behind is
+9. **Check** — run the coverage check (above) against each structured
+   source before removing it; then `ls /_raw/` should be empty. Anything left behind is
    auto-swept into `/_unsorted/` after your run. Every source item produced
    at least one note, or you can say in one phrase why it holds no knowledge.
 10. **Submit** with `submit_result`.
