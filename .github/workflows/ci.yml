@@ -42,13 +42,18 @@ jobs:
         run: npm test
 
   # Fails on high or critical advisories in any installed package, dev tools
-  # included. Lower severities are listed in the job summary but do not fail.
+  # included. Lower severities are reported but do not fail. On a pull request
+  # any finding is posted as one sticky comment (updated in place); when the
+  # audit is clean the comment is removed and the green check is the signal.
   # npm audit has no allowlist: to accept a specific high advisory, fix or
   # override the dependency, or temporarily drop this job from the required
   # checks — never lower the threshold for everyone.
   audit:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v7
 
@@ -62,10 +67,13 @@ jobs:
         run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
 
       - name: Audit dependencies
+        id: audit
         run: |
           set +e
+          npm audit --json > audit.json
           npm audit --audit-level=high > audit.txt
-          status=$?
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+          cat audit.txt
           {
             echo '## npm audit (fails on high and critical)'
             echo
@@ -73,5 +81,71 @@ jobs:
             cat audit.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          cat audit.txt
-          exit $status
+
+      # Fork PRs get a read-only token, so commenting may fail there; the
+      # threshold below still decides the job result.
+      - name: Comment on pull request
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            const MARKER = '<!-- npm-audit-report -->';
+            const report = JSON.parse(fs.readFileSync('audit.json', 'utf8'));
+            const counts = report.metadata?.vulnerabilities ?? {};
+            const vulns = Object.values(report.vulnerabilities ?? {});
+            const levels = ['critical', 'high', 'moderate', 'low', 'info'];
+
+            let body = null;
+            if (vulns.length > 0) {
+              const failing = (counts.critical ?? 0) + (counts.high ?? 0) > 0;
+              const rank = (v) => levels.indexOf(v.severity);
+              const rows = vulns
+                .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name))
+                .map((v) => {
+                  const fix = v.fixAvailable === true ? 'yes'
+                    : v.fixAvailable ? `${v.fixAvailable.name}@${v.fixAvailable.version}${v.fixAvailable.isSemVerMajor ? ' (major)' : ''}`
+                    : 'no';
+                  const via = v.via.map((x) => typeof x === 'string' ? x : `[${x.title}](${x.url})`).join('<br>');
+                  return `| ${v.severity} | \`${v.name}\` | ${v.isDirect ? 'direct' : 'transitive'} | ${fix} | ${via} |`;
+                });
+              let text = fs.readFileSync('audit.txt', 'utf8').trim();
+              if (text.length > 30000) text = text.slice(0, 30000) + '\n… truncated, see the job log';
+              body = [
+                MARKER,
+                '## npm audit found vulnerable dependencies',
+                '',
+                failing
+                  ? '**This fails CI:** there are high or critical advisories.'
+                  : 'Below the failure threshold (high): reported only, CI is not blocked.',
+                '',
+                `Critical ${counts.critical ?? 0} · High ${counts.high ?? 0} · Moderate ${counts.moderate ?? 0} · Low ${counts.low ?? 0}`,
+                '',
+                '| Severity | Package | Dependency | Fix | Advisories / via |',
+                '| --- | --- | --- | --- | --- |',
+                ...rows,
+                '',
+                '<details><summary>Full npm audit output</summary>',
+                '',
+                '```',
+                text,
+                '```',
+                '</details>',
+              ].join('\n');
+            }
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const existing = comments.find((c) => c.body?.includes(MARKER));
+            if (!body) {
+              if (existing) await github.rest.issues.deleteComment({ owner, repo, comment_id: existing.id });
+            } else if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+
+      - name: Enforce audit threshold
+        run: exit ${{ steps.audit.outputs.status }}
