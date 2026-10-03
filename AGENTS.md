@@ -79,7 +79,7 @@ and commits via real git from the host side.
 - `src/structured-result.ts` — `useStructuredResult()` custom hook
   (`submit_result` tool + data part + finish enforcement + usage metadata)
   and `readStructuredReply()` for the route side.
-- `src/model.ts` — model and reasoning effort shared by both agents.
+- `src/model.ts` — model shared by both agents and per-agent reasoning effort.
 - `src/request.ts` — request errors, per-request instance ids, `meta` helpers.
 - `src/cli.ts`, `scripts/run-cli.mjs` — run a pipeline from the command line
   against an in-process Flue runtime (no HTTP server).
@@ -243,13 +243,15 @@ For production-style serving (skills, manual testing) use `npm run serve`, then 
 - **Version**: Flue 2.1.0 (`@flue/runtime`, `@flue/vite`, `@flue/cli`), the
   newest release available through the npm mirror used here. Agent code
   imports from `@flue/runtime`; `@flue/sdk` is now only an HTTP client.
-- **Model**: `openrouter/openai/gpt-6-luna` with `thinkingLevel: 'xhigh'`
-  (`src/model.ts`). The `@earendil-works/pi-ai` 0.83 catalog bundled with
+- **Model**: `openrouter/openai/gpt-6-luna` for both agents (`src/model.ts`);
+  reasoning effort is per agent — curator `thinkingLevel: 'xhigh'`, retriever
+  `'medium'`. The `@earendil-works/pi-ai` 0.83 catalog bundled with
   Flue 2.1.0 predates GPT-6 Luna, so `src/openrouter-provider.ts` re-registers
   the `openrouter` provider with the catalog plus an explicitly declared
   GPT-6 Luna record (reasoning, `xhigh` mapping, pricing copied from pi-ai
   0.87.1). Without it the specifier fails with `Unknown model ID`; with it the
-  request carries `reasoning.effort: "xhigh"`. Remove that module once Flue
+  request carries `reasoning.effort` (`"xhigh"` for the curator, `"medium"`
+  for the retriever). Remove that module once Flue
   ships pi-ai >= 0.87.1 (Flue 2.2.0+).
 - **Agents are conversations**: an agent is a synchronous `'use agent'`
   function using hooks; work is sent with `init(Agent, { id }).dispatch()`

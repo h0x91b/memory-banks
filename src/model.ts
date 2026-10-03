@@ -8,4 +8,7 @@ import './openrouter-provider.js';
  * Importing this module performs that registration.
  */
 export const MODEL = 'openrouter/openai/gpt-6-luna';
-export const THINKING_LEVEL: ThinkingLevel = 'xhigh';
+
+/** Reasoning effort per agent: the curator rewrites the bank, the retriever only reads it. */
+export const CURATOR_THINKING_LEVEL: ThinkingLevel = 'xhigh';
+export const RETRIEVER_THINKING_LEVEL: ThinkingLevel = 'medium';
