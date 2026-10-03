@@ -72,6 +72,8 @@ times more and takes many times longer than the same work in few calls.
   plan, so no link ever needs fixing later. When unsure, mention the other
   topic by name instead of linking.
 - **Check once at the end** with one combined listing, not after every file.
+  Do not validate manifests or the map yourself (`jq` schema checks and the
+  like): `submit_result` runs the validator and lists every violation.
 - **Then submit.** When every input has its disposition, every content file
   has a manifest and the root map is current, call `submit_result`. Do not
   look for more to improve. For one large source, the whole run should take
@@ -237,11 +239,14 @@ is not processing it.
 
 ### Read the whole source
 
-- The `read` tool shows at most 2000 lines or 50 KB per call. For a larger
-  file, page through it with `offset` / `limit`, or with `sed -n 'A,Bp'` in
-  `bash`, until you have covered every part that carries knowledge. Use
-  `grep -n` to find where the data sections start and end. Do not decide what
-  a source contains from its first page.
+- **Read files with `read`, never with `cat`, `sed` or `head`.** A file up to
+  200 000 characters comes back whole. A larger one comes back as page 1 of
+  N, with a header naming N; the pages are consecutive and never overlap, so
+  request every remaining page (`page=2` … `page=N`) in parallel calls in
+  the same step. Do not page by line numbers. `bash` output over the same
+  cap is cut, keeping its start, and says so.
+- Use `grep -n` to see how a source is structured. Do not decide what a
+  source contains from its first page.
 - Text inside JavaScript or JSON data (`const STAGES = [ { title: …, what: … } ]`)
   is content: read the strings, ignore the code around them.
 - Never execute uploaded code. Read it as text.
@@ -275,6 +280,11 @@ is not processing it.
   map" or index-style notes that only list other notes: the root map already
   does that. A glossary note is fine when the source itself has a glossary;
   then it carries the source's definitions, not links.
+- **Each fact lives in one note.** When two notes touch the same facts
+  (hardware, a run's setup, a definition), write them out in the note that
+  owns the topic and name that note from the other one; do not repeat them.
+  Each glossary term goes into one manifest only — the note that explains
+  it — so the generated glossary never has two descriptions of one term.
 - **Provenance.** End each note with a line
   `Source: <original filename(s)>, ingest commit <sha>` using the names in
   `_raw/` and the ingest commit from the briefing when it is given. Never copy
@@ -296,6 +306,9 @@ outside the page), never an oversight.
 The host commits everything in `_raw/` before your run, so originals stay
 recoverable from git history. Once you have written the notes for a source
 file, remove that file from `_raw/` — do not also file it as bank content.
+Remove originals in one call **after all notes are written and the coverage
+check is done**, never between writes: a later note or check may still need
+the source.
 Keep an original in the bank only when it is an **attachment** in the sense
 above.
 
