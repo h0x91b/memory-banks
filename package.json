@@ -18,7 +18,7 @@
     "@earendil-works/pi-ai": "0.83.0",
     "@flue/runtime": "2.1.0",
     "@flue/vite": "2.1.0",
-    "hono": "4.12.32",
+    "hono": "4.13.8",
     "just-bash": "^3.0.0",
     "unpdf": "1.8.1",
     "valibot": "^1.5.0"
@@ -29,6 +29,7 @@
     "vite": "^8.3.0"
   },
   "overrides": {
+    "hono": "$hono",
     "guarded-fetch": {
       "undici": "^7.29.1"
     }
