@@ -1,0 +1,6 @@
+WALL BOILER — SERVICE NOTES (transcribed from the paper manual in the hallway cupboard)
+
+Normal cold system pressure: 1.2 to 1.5 bar.
+If the gauge shows below 0.8 bar, refill through the grey filling loop under the boiler until it reads 1.3 bar, then close both taps.
+Error code F22 means low water pressure. Error code F28 means the burner did not ignite.
+Annual service is due every November. Filter in the return pipe: rinse it at every annual service.
