@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# package-lock.json is deliberately not tracked, so every run resolves the
+# dependency ranges in package.json afresh. That is why there is no `npm ci`
+# and no npm cache here, and why a run can differ from the previous one
+# without any change in this repo.
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+  # Fails on high or critical advisories in any installed package, dev tools
+  # included. Lower severities are listed in the job summary but do not fail.
+  # npm audit has no allowlist: to accept a specific high advisory, fix or
+  # override the dependency, or temporarily drop this job from the required
+  # checks — never lower the threshold for everyone.
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      # Resolve the dependency tree into a throwaway lockfile; nothing is
+      # downloaded into node_modules and no install scripts run.
+      - name: Resolve dependency tree
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+
+      - name: Audit dependencies
+        run: |
+          set +e
+          npm audit --audit-level=high > audit.txt
+          status=$?
+          {
+            echo '## npm audit (fails on high and critical)'
+            echo
+            echo '```'
+            cat audit.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat audit.txt
+          exit $status
