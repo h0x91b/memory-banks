@@ -50,10 +50,7 @@ export async function ensureBank(bank: string): Promise<EnsureBankResult> {
 
   const indexPath = path.join(fsPath, '_index.md');
   if (!existsSync(indexPath)) {
-    await fs.writeFile(
-      indexPath,
-      `# ${bank}\n\nMemory bank index. Curated automatically by the librarian agent.\n`,
-    );
+    await fs.writeFile(indexPath, rootMapScaffold(bank));
   }
 
   const gitignorePath = path.join(repoPath, '.gitignore');
@@ -62,6 +59,15 @@ export async function ensureBank(bank: string): Promise<EnsureBankResult> {
   }
 
   return { created, repoPath, fsPath };
+}
+
+/**
+ * Root map of a brand-new bank: a valid empty map per
+ * docs/design/bank-format.md §5.1 (title, overview, empty `## Folders`).
+ * Written only when the bank has no `_index.md`; existing maps are never touched.
+ */
+export function rootMapScaffold(bank: string): string {
+  return `# ${bank}\n\nMemory bank index. Curated automatically by the librarian agent.\n\n## Folders\n`;
 }
 
 function expandTilde(p: string): string {

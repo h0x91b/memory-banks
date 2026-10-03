@@ -264,7 +264,7 @@ describe('root map', () => {
     assert.deepEqual(map.entries, []);
   });
 
-  test('the current scaffold (no Folders heading) is a structure error', () => {
+  test('the legacy scaffold (no Folders heading) is a structure error', () => {
     const map = parseRootMap('# b\n\nMemory bank index. Curated automatically by the curator agent.\n');
     assert.deepEqual(codes(map.violations), ['map-structure']);
     assert.equal(map.violations[0].detail, 'folders-heading');

@@ -7,7 +7,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
 
-import { bankPath, ensureBank } from '../src/bank.ts';
+import { parseRootMap } from '../src/bank-format/index.ts';
+import { bankPath, ensureBank, rootMapScaffold } from '../src/bank.ts';
+import { validateBank } from '../src/bank-validator/index.ts';
 import { readGitChanges } from '../src/changes.ts';
 import { gitCommitAll, gitEnsureRepo } from '../src/git.ts';
 
@@ -27,6 +29,21 @@ test('bank names outside [a-z0-9][a-z0-9-]* are rejected', () => {
     assert.throws(() => bankPath(bad), /Invalid bank name/, bad);
   }
   assert.equal(bankPath('ok-bank-1'), path.join(root, 'ok-bank-1'));
+});
+
+test('a new bank passes the bank format validator', async () => {
+  assert.deepEqual(parseRootMap(rootMapScaffold('fresh')).violations, []);
+  const { fsPath } = await ensureBank('fresh');
+  assert.equal(await fs.readFile(path.join(fsPath, '_index.md'), 'utf8'), rootMapScaffold('fresh'));
+  assert.deepEqual((await validateBank(fsPath)).violations, []);
+});
+
+test('ensureBank never rewrites an existing root map', async () => {
+  const { fsPath } = await ensureBank('kept');
+  const custom = '# kept\n\nHand-written overview.\n\n## Folders\n';
+  await fs.writeFile(path.join(fsPath, '_index.md'), custom);
+  await ensureBank('kept');
+  assert.equal(await fs.readFile(path.join(fsPath, '_index.md'), 'utf8'), custom);
 });
 
 test('a new bank is scaffolded, committed, and reports edits relative to fs/', async () => {
