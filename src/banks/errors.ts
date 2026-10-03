@@ -9,6 +9,7 @@ export type ApiErrorCode =
   | 'invalid_json'
   | 'validation_error'
   | 'invalid_cursor'
+  | 'not_found'
   | 'bank_not_found'
   | 'bank_exists'
   | 'bank_archiving'
@@ -20,6 +21,7 @@ const STATUS: Record<ApiErrorCode, 400 | 404 | 409 | 500> = {
   invalid_json: 400,
   validation_error: 400,
   invalid_cursor: 400,
+  not_found: 404,
   bank_not_found: 404,
   bank_exists: 409,
   bank_archiving: 409,

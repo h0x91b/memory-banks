@@ -2,3 +2,4 @@
 export * from './errors.ts';
 export * from './registry.ts';
 export { createBanksRouter } from './router.ts';
+export { runGuarded, type GuardedRunOptions } from './agent-guard.ts';

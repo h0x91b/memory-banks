@@ -3,8 +3,8 @@
 Explicit management of memory banks: create, list, read, rename/describe, archive, restore.
 Nothing in this API ever deletes or moves a bank's files or git history.
 
-Code: `src/banks/` (`registry.ts` storage + lifecycle, `router.ts` HTTP, `errors.ts` envelope).
-Mount: `app.route('/v1', createBanksRouter())`.
+Code: `src/banks/` (`registry.ts` storage + lifecycle, `router.ts` HTTP, `errors.ts` envelope,
+`agent-guard.ts` wrapper for agent runs). Mounted in `.flue/app.ts` as `app.route('/v1', createBanksRouter(bankRegistry))`.
 
 ## Bank resource
 
@@ -44,13 +44,15 @@ Every error has the same envelope:
 | 400 | `invalid_json` | Body is not a JSON object |
 | 400 | `validation_error` | Missing/unknown field, bad `name`/`description`, bad `status`/`limit` query. `details.field` names it |
 | 400 | `invalid_cursor` | `cursor` is malformed or came from a list with a different `status` filter |
+| 404 | `not_found` | No `/v1` route for this method and path |
 | 404 | `bank_not_found` | No such bank |
 | 409 | `bank_exists` | Create of an id that already exists (with or without a lifecycle record) |
 | 409 | `bank_archiving` | Restore while still archiving; also returned by the lifecycle guard for new work |
 | 409 | `bank_archived` | Returned by the lifecycle guard for new work on an archived bank |
 | 500 | `internal_error` | Unexpected failure; details go to the server log only |
 
-Unknown `/v1` paths are not handled by this router; the host app's not-found applies.
+Unknown `/v1/*` paths get the envelope with `not_found` from the app-level not-found handler; the router itself
+has no catch-all, so other `/v1` routers (stats) can mount alongside it.
 
 ## Endpoints
 
@@ -164,7 +166,17 @@ Guarantees:
 4. The guard decides admission only. Work admitted before the archive request is allowed to finish.
 
 Who must call it: anything that writes material into a bank or runs an agent over it — intake, the queue worker,
-and the existing `/agents/*` runs once they are wired (not done in this slice).
+and the agent runs. The agent runs are already wired through `src/guarded-runs.ts`, used by both `.flue/app.ts` and
+the CLI (`src/cli.ts`):
+
+| Entry point | Guard kind | Missing bank | Archiving / archived bank |
+|---|---|---|---|
+| `POST /agents/librarian/:id`, `POST /agents/curator/:id` (alias) | `curate` | scaffolded, then admitted (unchanged behaviour) | `409 {"error": "...", "code": "bank_archiving" \| "bank_archived"}`, bank untouched |
+| `POST /agents/retriever/:id` | `query` | runs as before, answers `reason: "bank-missing"` | same `409` |
+| `scripts/run-cli.mjs librarian\|retriever` | same as above | same | throws `ApiError`, exit code 1 |
+
+`/agents/*` keep their old error shape `{"error": string}`; the `code` field is added only for lifecycle refusals.
+An invalid bank name still reaches the pipeline's own validation and answers `400` as before.
 
 Known limits:
 
