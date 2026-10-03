@@ -123,6 +123,7 @@ No body. `archived` → `active`, `200`. Already `active` → `200`, unchanged. 
 | `<root>/<id>/` | The bank. Never written by archive/restore/patch |
 | `<root>/.lifecycle/banks/<id>.json` | Lifecycle record, `{"schema": 1, ...resource}`, written atomically (temp + rename) |
 | `<root>/.lifecycle/leases/<id>/<lease>.json` | One file per in-flight operation: `{id, bank, kind, pid, startedAt}` |
+| `<root>/.lifecycle/holds/<id>/<kind>-<ref>.json` | One file per accepted-but-unfinished piece of durable work (queued ingestion): `{id, bank, kind, ref, createdAt}`. Not PID-bound |
 
 - A bank is a real directory (not a symlink) under the root, named by the id rule, containing `fs/` or `.git`.
   Symlinks and stray folders are never listed or resolved.
@@ -164,6 +165,30 @@ Guarantees:
 3. Leases are files. A lease whose process is gone (crash, restart) is stale and ignored, so a half-finished archive
    completes on the next read of that bank.
 4. The guard decides admission only. Work admitted before the archive request is allowed to finish.
+5. `archiving` becomes `archived` only when no live lease **and** no durable hold remains.
+
+### Durable holds (accepted work that outlives the process)
+
+A lease dies with its process, which is right for a synchronous run but wrong for work that was accepted with
+`202` and waits in a queue. `BankRegistry` also implements `DurableWorkGuard`:
+
+```ts
+interface DurableHold { id: string; bank: string; kind: OperationKind; ref: string; createdAt: string }
+
+interface DurableWorkGuard {
+  // Under the bank lock: refuse unless active (same errors as beginOperation), persist the hold (fsync),
+  // then run `commit` still holding the lock. commit throws -> hold removed, error rethrown.
+  admitDurableWork<T>(bank, kind, ref, commit: (hold) => Promise<T>): Promise<T>;
+  releaseDurableWork(bank, holdId): Promise<void>;   // idempotent; settles an archiving bank
+  listDurableWork(bank): Promise<DurableHold[]>;
+  ensureDurableWork(bank, kind, ref): Promise<DurableHold>; // recovery only, ignores status; never admits new work
+}
+```
+
+The hold id is deterministic (`<kind>-<ref>`), so re-creating it is idempotent. A crash between the hold write and
+the owner's commit leaves an orphan hold; the owner must reconcile its holds on startup (the ingestion store does,
+see `docs/api/ingestions.md` § Crash recovery). Holds keep a bank `archiving` across restarts, and `restore` stays
+refused until they are released.
 
 Who must call it: anything that writes material into a bank or runs an agent over it — intake, the queue worker,
 and the agent runs. The agent runs are already wired through `src/guarded-runs.ts`, used by both `.flue/app.ts` and

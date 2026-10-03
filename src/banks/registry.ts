@@ -17,6 +17,11 @@
 // refused from then on even across a restart. It turns into `archived` once
 // no live operation lease remains. Leases are files, so a restart cannot
 // forget them; a lease whose owning process is gone is stale and ignored.
+//
+// Durable holds (<root>/.lifecycle/holds/<id>/<holdId>.json) are the second
+// kind of pending work: accepted-but-unprocessed work such as a queued
+// ingestion. Unlike a lease a hold is not tied to a PID, so it keeps a bank
+// `archiving` across restarts until its owner releases it explicitly.
 
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
@@ -68,6 +73,50 @@ export interface BankLifecycleGuard {
    * `bank_archiving` or `bank_archived`; nothing is recorded in that case.
    */
   beginOperation(bank: string, kind: OperationKind): Promise<OperationLease>;
+}
+
+/** Accepted work that must finish before the bank can become archived. */
+export interface DurableHold {
+  /** Deterministic: `<kind>-<ref>`, so re-creating a hold is idempotent. */
+  readonly id: string;
+  readonly bank: string;
+  readonly kind: OperationKind;
+  /** Owner's id for the work, e.g. an ingestion request id. */
+  readonly ref: string;
+  readonly createdAt: string;
+}
+
+/**
+ * Port for queues that accept work now and run it later (ingestion). Holds
+ * survive restarts; archive waits for them exactly like it waits for leases.
+ */
+export interface DurableWorkGuard {
+  /**
+   * Under the bank's lifecycle lock: refuse unless active (same errors as
+   * beginOperation), persist the hold, then run `commit` still holding the
+   * lock. If `commit` throws, the hold is removed and the error rethrown.
+   * Crash between hold and commit leaves an orphan hold: the owner must
+   * reconcile it (see `listDurableWork` / `releaseDurableWork`).
+   */
+  admitDurableWork<T>(
+    bank: string,
+    kind: OperationKind,
+    ref: string,
+    commit: (hold: DurableHold) => Promise<T>,
+  ): Promise<T>;
+  /** Idempotent. Lets an archiving bank settle to archived. */
+  releaseDurableWork(bank: string, holdId: string): Promise<void>;
+  listDurableWork(bank: string): Promise<DurableHold[]>;
+  /**
+   * Recovery only: re-create the hold for work that was already accepted,
+   * whatever the bank status (it may be archiving by now). Never use this to
+   * admit new work.
+   */
+  ensureDurableWork(bank: string, kind: OperationKind, ref: string): Promise<DurableHold>;
+}
+
+export function durableHoldId(kind: OperationKind, ref: string): string {
+  return `${kind}-${ref}`;
 }
 
 export interface CreateBankInput {
@@ -127,7 +176,7 @@ async function withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
   }
 }
 
-export class BankRegistry implements BankLifecycleGuard {
+export class BankRegistry implements BankLifecycleGuard, DurableWorkGuard {
   // Resolved per call so MEMORY_BANK_ROOT behaves exactly as in src/bank.ts.
   private root(): string {
     return bankRoot();
@@ -143,6 +192,10 @@ export class BankRegistry implements BankLifecycleGuard {
 
   private leaseDir(id: string): string {
     return path.join(this.root(), LIFECYCLE_DIR, 'leases', id);
+  }
+
+  private holdDir(id: string): string {
+    return path.join(this.root(), LIFECYCLE_DIR, 'holds', id);
   }
 
   private lockKey(id: string): string {
@@ -322,7 +375,83 @@ export class BankRegistry implements BankLifecycleGuard {
     };
   }
 
+  async admitDurableWork<T>(
+    bank: string,
+    kind: OperationKind,
+    ref: string,
+    commit: (hold: DurableHold) => Promise<T>,
+  ): Promise<T> {
+    assertBankId(bank);
+    assertHoldRef(ref);
+    return withLock(this.lockKey(bank), async () => {
+      const current = await this.readRecord(bank);
+      if (!current) throw notFound(bank);
+      if (current.status !== 'active') {
+        throw new ApiError(
+          current.status === 'archiving' ? 'bank_archiving' : 'bank_archived',
+          `Bank "${bank}" is ${current.status} and does not accept new work`,
+          { bank, status: current.status },
+        );
+      }
+      const hold = await this.writeHold(bank, kind, ref);
+      try {
+        return await commit(hold);
+      } catch (err) {
+        await fs.rm(this.holdFile(bank, hold.id), { force: true });
+        throw err;
+      }
+    });
+  }
+
+  async ensureDurableWork(bank: string, kind: OperationKind, ref: string): Promise<DurableHold> {
+    assertBankId(bank);
+    assertHoldRef(ref);
+    return withLock(this.lockKey(bank), async () => {
+      const existing = await readJson<DurableHold>(this.holdFile(bank, durableHoldId(kind, ref)));
+      return existing ?? this.writeHold(bank, kind, ref);
+    });
+  }
+
+  async releaseDurableWork(bank: string, holdId: string): Promise<void> {
+    assertBankId(bank);
+    assertHoldRef(holdId);
+    await withLock(this.lockKey(bank), async () => {
+      await fs.rm(this.holdFile(bank, holdId), { force: true });
+      const current = await this.readRecord(bank);
+      if (current?.status === 'archiving') await this.settle(bank);
+    });
+  }
+
+  async listDurableWork(bank: string): Promise<DurableHold[]> {
+    assertBankId(bank);
+    let names: string[];
+    try {
+      names = await fs.readdir(this.holdDir(bank));
+    } catch (err) {
+      if (isNotFound(err)) return [];
+      throw err;
+    }
+    const holds: DurableHold[] = [];
+    for (const name of names.sort()) {
+      if (!name.endsWith('.json')) continue;
+      const hold = await readJson<DurableHold>(path.join(this.holdDir(bank), name));
+      if (hold) holds.push(hold);
+    }
+    return holds;
+  }
+
   // ---- internals (callers hold the lock where it matters) -----------------
+
+  private holdFile(bank: string, holdId: string): string {
+    return path.join(this.holdDir(bank), `${holdId}.json`);
+  }
+
+  private async writeHold(bank: string, kind: OperationKind, ref: string): Promise<DurableHold> {
+    const hold: DurableHold = { id: durableHoldId(kind, ref), bank, kind, ref, createdAt: new Date().toISOString() };
+    await fs.mkdir(this.holdDir(bank), { recursive: true });
+    await writeJsonDurable(this.holdFile(bank, hold.id), hold);
+    return hold;
+  }
 
   /** archiving -> archived when no live lease remains. Stale lease files are removed. */
   private async settle(bank: string): Promise<BankRecord> {
@@ -330,6 +459,7 @@ export class BankRegistry implements BankLifecycleGuard {
     if (!current) throw notFound(bank);
     if (current.status !== 'archiving') return current;
     if ((await this.liveLeaseCount(bank)) > 0) return current;
+    if ((await this.listDurableWork(bank)).length > 0) return current;
     const now = new Date().toISOString();
     const next: BankRecord = { ...current, status: 'archived', archivedAt: now, updatedAt: now };
     await this.writeRecord(next);
@@ -469,6 +599,12 @@ function invalidField(field: string, problem: string): ApiError {
   return new ApiError('validation_error', `${field} ${problem}`, { field });
 }
 
+const HOLD_REF_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,150}$/;
+
+function assertHoldRef(ref: string): void {
+  if (!HOLD_REF_RE.test(ref)) throw new Error(`Invalid durable work ref "${ref}"`);
+}
+
 function notFound(bank: string): ApiError {
   return new ApiError('bank_not_found', `Bank "${bank}" not found`, { bank });
 }
@@ -500,6 +636,32 @@ async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
   const tmp = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
   await fs.writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`);
   await fs.rename(tmp, file);
+}
+
+/** Like writeJsonAtomic, but fsyncs the file and its directory: survives power loss, not just a crash. */
+export async function writeJsonDurable(file: string, value: unknown): Promise<void> {
+  const tmp = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
+  const handle = await fs.open(tmp, 'w');
+  try {
+    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await fs.rename(tmp, file);
+  await fsyncDir(path.dirname(file));
+}
+
+export async function fsyncDir(dir: string): Promise<void> {
+  const handle = await fs.open(dir, 'r');
+  try {
+    await handle.sync();
+  } catch (err) {
+    // Some platforms refuse fsync on directories; the rename is still atomic.
+    if (!['EINVAL', 'EPERM', 'EISDIR', 'EBADF'].includes((err as NodeJS.ErrnoException).code ?? '')) throw err;
+  } finally {
+    await handle.close();
+  }
 }
 
 function isNotFound(err: unknown): boolean {
