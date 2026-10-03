@@ -99,7 +99,7 @@ test('202 queued -> succeeded with commits and the completed revision, then a cl
   const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: path.join(bankRoot, 'built'), encoding: 'utf8' }).trim();
   assert.equal(record.revision, head);
   assert.equal(record.commits.length, 2, 'ingest + curate');
-  assert.deepEqual(readdirSync(path.join(bankRoot, 'built', 'fs', 'notes')), ['milk.md']);
+  assert.deepEqual(readdirSync(path.join(bankRoot, 'built', 'fs', 'notes')).sort(), ['milk.md', 'milk.md.manifest.json']);
 
   child.kill('SIGTERM');
   const code = await new Promise((r) => child.once('exit', (c) => r(c)));

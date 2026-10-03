@@ -11,6 +11,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createServer, createServerModuleRunner, type ViteDevServer } from 'vite';
+import { validateBank } from '../src/bank-validator/index.ts';
 import { FakeIngestionStore, ManualClock, settle } from './fixtures/fake-ingestion-store.ts';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
@@ -23,6 +24,7 @@ let runner: ReturnType<typeof createServerModuleRunner>;
 let flue: { stop(): Promise<void> };
 let fx: any;
 
+const FILE_ALL = "mkdir -p /notes && for f in /_raw/*; do n=$(basename \"$f\"); mv \"$f\" \"/notes/$n\"; echo \"{\\\"title\\\":\\\"Note $n\\\",\\\"keywords\\\":[\\\"note\\\"],\\\"glossary\\\":{}}\" > \"/notes/$n.manifest.json\"; done && printf -- '- `notes/` — Filed notes\\n' >> /_index.md";
 const submit = (args: unknown) =>
   fx.fauxAssistantMessage([fx.fauxToolCall('submit_result', args)], { stopReason: 'toolUse' });
 const git = (bank: string, ...args: string[]) =>
@@ -76,9 +78,10 @@ test('queued text + url items reach a terminal status through the real ingest an
   );
   await worker.start();
 
-  // The Librarian moves both raw files into notes/ and submits.
+  // The Librarian files both raw files into notes/ with a manifest each (the
+  // bank-format gate rejects content without one) and submits.
   fx.faux.setResponses([
-    fx.fauxAssistantMessage([fx.fauxToolCall('bash', { command: 'mkdir -p notes && mv _raw/* notes/' })], {
+    fx.fauxAssistantMessage([fx.fauxToolCall('bash', { command: FILE_ALL })], {
       stopReason: 'toolUse',
     }),
     submit({ summary: 'filed 2 notes' }),
@@ -94,8 +97,15 @@ test('queued text + url items reach a terminal status through the real ingest an
     [1, 'succeeded', null],
     [2, 'failed', 'download_failed'],
   ]);
-  assert.deepEqual(readdirSync(path.join(bankRoot, 'inbox', 'fs', 'notes')).sort(), ['page.md', 'thought.md']);
+  assert.deepEqual(readdirSync(path.join(bankRoot, 'inbox', 'fs', 'notes')).sort(), [
+    'page.md',
+    'page.md.manifest.json',
+    'thought.md',
+    'thought.md.manifest.json',
+  ]);
   assert.equal(readdirSync(path.join(bankRoot, 'inbox', 'fs', '_raw')).length, 0);
+  const report = await validateBank(path.join(bankRoot, 'inbox', 'fs'));
+  assert.equal(report.errors, 0, `filed bank passes the format gate: ${JSON.stringify(report.violations)}`);
   const head = git('inbox', 'rev-parse', 'HEAD');
   assert.equal(r.outcome!.revision, head);
   assert.match(git('inbox', 'log', '-1', '--format=%s'), /^curate: filed 2 notes/);
