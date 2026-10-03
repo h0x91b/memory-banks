@@ -57,6 +57,8 @@ Retrying with the same `Idempotency-Key` and the same payload returns the same r
 The worker collects a bank's requests for a fixed window (default 60 s from the oldest queued arrival,
 `MEMORY_BANK_INGESTION_WINDOW_MS`), then runs one Librarian batch over all of them. Banks run in parallel; one bank
 runs one batch at a time, and requests that arrive during a batch go into the next one.
+Send `"immediate": true` with a request to skip the window for the bank's next batch (it still waits for a running
+one): `docs/api/ingestions.md` § Immediate processing.
 
 ```sh
 curl -s localhost:47823/v1/banks/family-notes/ingestions/ing_...

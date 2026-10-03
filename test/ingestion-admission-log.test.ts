@@ -109,6 +109,7 @@ test('worker queueTiming: configured window from the oldest queued arrival, late
     windowMs: 90_000,
     firstQueuedAt: null,
     eligibleAt: null,
+    immediate: false,
     batchRunning: false,
   });
   store.enqueue('b', [{ index: 0, kind: 'text' } as any]);

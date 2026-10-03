@@ -29,10 +29,10 @@ export const MAX_HINT_LENGTH = 4000;
 export const LIST_LIMIT_DEFAULT = 50;
 export const LIST_LIMIT_MAX = 100;
 
-const JSON_KEYS = new Set(['items', 'metadata', 'hint']);
+const JSON_KEYS = new Set(['items', 'metadata', 'hint', 'immediate']);
 const TEXT_ITEM_KEYS = new Set(['type', 'text', 'filename', 'mediaType', 'metadata']);
 const URL_ITEM_KEYS = new Set(['type', 'url', 'filename', 'metadata']);
-const MULTIPART_FIELDS = new Set(['file', 'text', 'url', 'metadata', 'hint']);
+const MULTIPART_FIELDS = new Set(['file', 'text', 'url', 'metadata', 'hint', 'immediate']);
 const STATUS_FILTERS: readonly (IngestionStatus | 'all')[] = [...INGESTION_STATUSES, 'all'];
 // Visible ASCII, as most Idempotency-Key implementations accept.
 const IDEMPOTENCY_KEY_RE = /^[\x21-\x7e]{1,255}$/;
@@ -74,8 +74,8 @@ export function createIngestionsRouter(
             { bank, status: state },
           );
         }
-        const { items, metadata, hint } = await readPayload(c);
-        const { record, replayed } = await store.accept({ bank, items, metadata, hint, idempotencyKey });
+        const { items, metadata, hint, immediate } = await readPayload(c);
+        const { record, replayed } = await store.accept({ bank, items, metadata, hint, immediate, idempotencyKey });
         const statusUrl = `/v1/banks/${bank}/ingestions/${record.id}`;
         c.header('Location', statusUrl);
         if (replayed) c.header('Idempotent-Replayed', 'true');
@@ -85,6 +85,7 @@ export function createIngestionsRouter(
           status: record.status,
           itemCount: record.items.length,
           replayed,
+          ...(record.immediate ? { immediate: true } : {}),
         });
         return c.json({ id: record.id, status: record.status, status_url: statusUrl }, 202);
       }),
@@ -184,6 +185,8 @@ interface Payload {
   metadata: Record<string, unknown> | null;
   /** Trimmed caller hint; null when absent or blank. */
   hint: string | null;
+  /** Skip the bank's batch window for its next batch; false when absent. */
+  immediate: boolean;
 }
 
 async function readPayload(c: Context): Promise<Payload> {
@@ -209,7 +212,12 @@ async function readJsonPayload(c: Context): Promise<Payload> {
   }
   if (body.items.length > MAX_ITEMS) throw invalid('items', `items may hold at most ${MAX_ITEMS} entries`);
   const items = body.items.map((raw, i) => readJsonItem(raw, i));
-  return { items, metadata: readMetadata(body.metadata, 'metadata'), hint: readHint(body.hint, 'hint') };
+  return {
+    items,
+    metadata: readMetadata(body.metadata, 'metadata'),
+    hint: readHint(body.hint, 'hint'),
+    immediate: readImmediate(body.immediate),
+  };
 }
 
 function readJsonItem(raw: unknown, i: number): NewItem {
@@ -300,7 +308,17 @@ async function readMultipartPayload(c: Context): Promise<Payload> {
   const hintParts = all('hint');
   if (hintParts.length > 1) throw invalid('hint', 'hint may be sent once');
   if (hintParts.length === 1 && typeof hintParts[0] !== 'string') throw invalid('hint', 'hint must be a text field');
-  return { items, metadata, hint: readHint(hintParts[0], 'hint') };
+
+  const immediateParts = all('immediate');
+  if (immediateParts.length > 1) throw invalid('immediate', 'immediate may be sent once');
+  let immediate = false;
+  if (immediateParts.length === 1) {
+    if (immediateParts[0] !== 'true' && immediateParts[0] !== 'false') {
+      throw invalid('immediate', 'immediate must be the text "true" or "false"');
+    }
+    immediate = immediateParts[0] === 'true';
+  }
+  return { items, metadata, hint: readHint(hintParts[0], 'hint'), immediate };
 }
 
 // ---- field validators -----------------------------------------------------------
@@ -321,6 +339,13 @@ function readHint(value: unknown, field: string): string | null {
   const hint = value.trim();
   if ([...hint].length > MAX_HINT_LENGTH) throw invalid(field, `${field} must be at most ${MAX_HINT_LENGTH} characters`);
   return hint || null;
+}
+
+/** JSON boolean only: no strings, numbers or null. Absent means false. */
+function readImmediate(value: unknown): boolean {
+  if (value === undefined) return false;
+  if (typeof value !== 'boolean') throw invalid('immediate', 'immediate must be true or false');
+  return value;
 }
 
 function readUrl(value: unknown, field: string): string {

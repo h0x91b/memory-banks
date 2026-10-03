@@ -35,6 +35,8 @@ export interface QueuedRequest {
   metadata?: Record<string, unknown> | null;
   /** Caller context for the Librarian about this request's own items. */
   hint?: string | null;
+  /** The caller asked to skip the bank's batch window (`immediate: true`). Informational for the worker. */
+  immediate?: boolean;
   items: QueuedItem[];
 }
 
@@ -42,6 +44,13 @@ export interface PendingBank {
   bank: string;
   /** createdAt of the bank's oldest queued request (ISO). */
   firstQueuedAt: string;
+  /**
+   * At least one queued request of the bank asked for `immediate: true`: the
+   * bank's next batch (with everything queued) is eligible now instead of when
+   * the window closes. Derived from durable queued state, so it survives a
+   * restart and an idempotent replay of a finished request cannot set it.
+   */
+  immediate?: boolean;
 }
 
 /** Every queued request of one bank, claimed together under one fencing token. */

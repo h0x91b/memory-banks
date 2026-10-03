@@ -135,7 +135,7 @@ and commits via real git from the host side.
   lock files `<root>/.locks/<bank>/`) for the legacy/CLI Librarian and the ingestion
   worker; records the last completed revision in `<root>/.revisions/<bank>.json`.
 - `src/ingestion-worker/` — processes queued ingestions: fixed 60s window per
-  bank, batch claim, per-item ingest, one Librarian run, results with commits
+  bank (skipped for the next batch by `immediate: true`), batch claim, per-item ingest, one Librarian run, results with commits
   and revision; at-least-once with lease recovery
   (`docs/design/ingestion-worker.md`).
 - `src/caller-hints.ts` — renders queued requests' caller `hint`s into the

@@ -35,6 +35,7 @@ The bank must exist and be `active`. Two body formats.
 | `mediaType` | Optional for `text`, like `text/markdown`; default `text/plain` |
 | `metadata` | Optional JSON object on the request and on each item, at most 16 KiB as JSON. Stored as given |
 | `hint` | Optional string on the request: your context or purpose for this material, for the Librarian. See § Caller hint |
+| `immediate` | Optional JSON boolean on the request, default `false`: start the bank's next batch without waiting for its window. See § Immediate processing |
 
 Unknown fields anywhere → `400 validation_error`.
 
@@ -47,6 +48,7 @@ Unknown fields anywhere → `400 validation_error`.
 | `url` | yes | a `url` item, same rules as JSON |
 | `metadata` | once | JSON object string → request metadata |
 | `hint` | once | text field → request `hint`, same rules as JSON. A second `hint` part or a file part named `hint` → `400` |
+| `immediate` | once | text field, exactly `true` or `false` → request `immediate`. Any other value, a second part or a file part → `400` |
 
 Images are plain `file` parts (`image/png`, `image/jpeg`, ...). Item order is: all files, then texts, then urls.
 Per-item metadata is JSON-only. Other part names → `400 validation_error`.
@@ -68,6 +70,24 @@ return"`. Optional in both formats.
 
 A string `metadata.hint` (the older, undocumented convention) is still passed on the same way, but only for a
 request without a top-level `hint`. New callers should use `hint`.
+
+### Immediate processing
+
+By default the worker collects a bank's requests for a fixed window (60 s from the oldest queued arrival) and files
+them in one Librarian run. `immediate: true` makes the bank's **next batch** eligible now.
+
+| Rule | Detail |
+|---|---|
+| Type | JSON: `true` or `false` only (no strings, numbers or `null`). Multipart: one text field, exactly `true` or `false`. Anything else → `400 validation_error`, `details.field: "immediate"` |
+| Response | Unchanged: still `202` with `status: "queued"`. Nothing is processed inside the POST |
+| What runs | One batch with **everything** queued for the bank at its start, earlier non-immediate requests included |
+| Busy bank | Waits for the running batch to finish, then starts right away. Never two Librarian runs per bank; nothing is cancelled or preempted |
+| Storage | In `request.json` and the status resource as `immediate: true`; the field is **omitted** when `false` |
+| Restart | The intent is stored with the request: after a restart (or a re-queued interrupted batch) it still skips the window |
+| Idempotency | Part of the payload: a repeat with a different `immediate` is `409 idempotency_conflict`. `false` keeps the fingerprint it had before this option existed. Replaying a finished request starts nothing |
+| Archive | No difference: archiving/archived banks refuse it like any request, accepted ones hold archive until done |
+
+The `202` console line says `immediate requested …, batch window skipped` instead of the window close time.
 
 ### Limits that apply to both
 
@@ -96,7 +116,7 @@ Optional header, 1–255 visible ASCII characters, scoped **per bank**.
 | Different payload | `409 idempotency_conflict`, `details.ingestionId` names the original |
 | Same key on another bank | Independent; a new request |
 
-"Same payload" = same request metadata, same trimmed `hint` and same items in the same order: type, content hash, filename, media type,
+"Same payload" = same request metadata, same trimmed `hint`, same `immediate` and same items in the same order: type, content hash, filename, media type,
 URL, item metadata. Concurrent identical repeats create exactly one request; keys survive restarts. Keys never expire.
 
 ### Errors
@@ -155,7 +175,7 @@ stored. The worker and `Idempotency-Key` matching use the real URL.
 | `partial` | Some items succeeded, some failed — see `items[].error` |
 | `failed` | No item succeeded; `error` may hold a request-level reason |
 
-`hint` is present only when the request carried one.
+`hint` is present only when the request carried one; `immediate: true` only when the request asked for it.
 
 Item `status`: `queued`, `running`, `succeeded`, `failed`; a failed item carries `error: {code, message}`.
 `revision` is the bank revision (git commit) the worker produced, `null` until completed. `commits` lists the
@@ -222,7 +242,7 @@ holds). `recoverAll()` repairs every bank and is meant for server startup. It fi
 `IngestionStore` implements `IngestionWorkQueue` (`src/ingestions/store.ts`):
 
 ```ts
-pendingBanks(): Promise<Array<{ bank: string; firstQueuedAt: string }>>;   // banks with queued work, oldest first
+pendingBanks(): Promise<Array<{ bank: string; firstQueuedAt: string; immediate?: true }>>; // queued work, oldest first
 pendingCounts(bank): Promise<{ queued: number; running: number }>;
 claimBatch({ bank, workerId, leaseMs }): Promise<IngestionBatchClaim | null>; // ALL queued of the bank -> running, one token
 heartbeat(claim, leaseMs?): Promise<void>;                                  // throws IngestionClaimLost when fenced out
@@ -232,7 +252,9 @@ reapExpired(now?): Promise<number>;                                         // e
 recoverAll(): Promise<void>;
 ```
 
-- Each claimed request carries `metadata` and, when it has one, `hint`; the worker hands hints to the Librarian per
+- `pendingBanks` sets `immediate: true` when any queued request of the bank asked for it (derived from stored
+  requests, so it survives restarts); the worker then skips that bank's window.
+- Each claimed request carries `metadata` and, when it has one, `hint` (and `immediate: true` when set); the worker hands hints to the Librarian per
   request (`docs/design/ingestion-worker.md`).
 - `complete` derives the request status from item outcomes, stores `revision`, `commits` (optional, at most 50
   hex shas) and `error`, and releases the holds. A malformed `commits` rejects the whole call before anything is written.
