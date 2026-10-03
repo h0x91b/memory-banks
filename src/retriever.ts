@@ -8,6 +8,7 @@ import { collectIndexes } from './index-scan.js';
 import { MODEL } from './model.js';
 import { MODEL_ID, RequestError, costMeta, freshInstanceId, tokensMeta } from './request.js';
 import { RESULT_TOOL, readStructuredReply } from './structured-result.js';
+import { recordAgentCall, sharedSpendLedger } from './spend-ledger.js';
 import {
   recordToolStarts,
   summarizeToolStarts,
@@ -66,19 +67,25 @@ export async function runRetriever(payload: RetrieverPayload | undefined, runId:
   const tLlm = Date.now();
   const instanceId = freshInstanceId('retriever', runId);
   const recorder = recordToolStarts(instanceId);
-  let reply;
   let toolStarts: ToolStart[] = [];
-  try {
-    const agent = init(Retriever, { id: instanceId });
-    const receipt = await agent.dispatch({
-      message: { kind: 'user', body: briefing },
-      initialData: { bank, fsPath },
-    });
-    reply = await agent.read(receipt);
-  } finally {
-    toolStarts = recorder.stop();
-  }
-  const { data, usage, toolCalls } = readStructuredReply(reply, RetrieverResultSchema);
+  const { data, usage, toolCalls } = await recordAgentCall(
+    sharedSpendLedger(),
+    { executionId: instanceId, bank, agent: 'retriever', runId, model: MODEL_ID },
+    async () => {
+      let reply;
+      try {
+        const agent = init(Retriever, { id: instanceId });
+        const receipt = await agent.dispatch({
+          message: { kind: 'user', body: briefing },
+          initialData: { bank, fsPath },
+        });
+        reply = await agent.read(receipt);
+      } finally {
+        toolStarts = recorder.stop();
+      }
+      return readStructuredReply(reply, RetrieverResultSchema);
+    },
+  );
   const bashCalls = toolCalls.filter((tool) => tool === 'bash').length;
   const telemetry = summarizeToolStarts(toolStarts, {
     fsPath,
