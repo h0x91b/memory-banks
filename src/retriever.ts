@@ -7,7 +7,13 @@ import { bankLogger } from './console-log.js';
 import { collectIndexes } from './index-scan.js';
 import { MODEL } from './model.js';
 import { MODEL_ID, RequestError, costMeta, freshInstanceId, tokensMeta } from './request.js';
-import { readStructuredReply } from './structured-result.js';
+import { RESULT_TOOL, readStructuredReply } from './structured-result.js';
+import {
+  recordToolStarts,
+  summarizeToolStarts,
+  telemetryLogLine,
+  type ToolStart,
+} from './retriever-telemetry.js';
 import { Retriever, RetrieverResultSchema } from '../.flue/agents/retriever.js';
 
 export interface RetrieverPayload {
@@ -46,7 +52,7 @@ export async function runRetriever(payload: RetrieverPayload | undefined, runId:
       bank,
       answer: EMPTY_ANSWER,
       references: [] as { path: string; why: string }[],
-      meta: { model: null, tokens: null, cost: null, bash_calls: 0, reason: 'bank-missing' },
+      meta: { model: null, tokens: null, cost: null, bash_calls: 0, reason: 'bank-missing', telemetry: null },
     };
   }
 
@@ -58,18 +64,37 @@ export async function runRetriever(payload: RetrieverPayload | undefined, runId:
   const briefing = buildBriefing(bank, question, fsPath, payload?.hint, indexToc);
   banklog('retriever', `LLM call (prompt=${briefing.length}B)`, 'blue');
   const tLlm = Date.now();
-  const agent = init(Retriever, { id: freshInstanceId('retriever', runId) });
-  const receipt = await agent.dispatch({
-    message: { kind: 'user', body: briefing },
-    initialData: { bank, fsPath },
-  });
-  const { data, usage, toolCalls } = readStructuredReply(await agent.read(receipt), RetrieverResultSchema);
+  const instanceId = freshInstanceId('retriever', runId);
+  const recorder = recordToolStarts(instanceId);
+  let reply;
+  let toolStarts: ToolStart[] = [];
+  try {
+    const agent = init(Retriever, { id: instanceId });
+    const receipt = await agent.dispatch({
+      message: { kind: 'user', body: briefing },
+      initialData: { bank, fsPath },
+    });
+    reply = await agent.read(receipt);
+  } finally {
+    toolStarts = recorder.stop();
+  }
+  const { data, usage, toolCalls } = readStructuredReply(reply, RetrieverResultSchema);
   const bashCalls = toolCalls.filter((tool) => tool === 'bash').length;
+  const telemetry = summarizeToolStarts(toolStarts, {
+    fsPath,
+    briefing,
+    recordedToolCalls: toolCalls.length,
+    resultTool: RESULT_TOOL,
+  });
   banklog(
     'retriever',
     `LLM done in ${ms(tLlm)} — tokens=${usage?.totalTokens ?? '?'} cost=$${usage ? usage.cost.total.toFixed(5) : '?'} bashCalls=${bashCalls} refs=${data.references.length}`,
     'blue',
   );
+  banklog('retriever', telemetryLogLine(telemetry), 'blue');
+  if (telemetry.read_paths.length > 0) {
+    banklog('retriever', `read order: ${telemetry.read_paths.join(' -> ')}`, 'blue');
+  }
   banklog('retriever', `answer: ${data.answer.slice(0, 200)}${data.answer.length > 200 ? '…' : ''}`, 'blue');
 
   const references = data.references.map((r) => normalizeReference(r, fsPath));
@@ -91,6 +116,7 @@ export async function runRetriever(payload: RetrieverPayload | undefined, runId:
       cost: costMeta(usage),
       bash_calls: bashCalls,
       unexpected_writes: changes.length,
+      telemetry,
     },
   };
 }
