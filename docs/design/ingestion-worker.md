@@ -73,8 +73,14 @@ API, not here. A bank that is already `archived` or gone fails the batch
    its original source (`src/ingest-provenance.ts`), then the trailers
    `Ingestion-Batch: <token>` and one `Ingestion-Item: <request>/<index>` per
    ingested item as the final paragraph.
-4. One Librarian run over `fs/_raw/` (request hints joined); the batch's source
-   records and ingest commit are passed as run context into the briefing.
+4. One Librarian run over `fs/_raw/`; the batch's source records, ingest commit
+   and per-request caller hints are passed as run context into the briefing.
+   Each request's `hint` (or, for a request without one, a legacy string
+   `metadata.hint`) is shown once, as a JSON record with the raw files of that
+   request's own items (`src/caller-hints.ts`), framed as caller context: not
+   an instruction over the role prompt and not a source of facts. Items
+   ingested by an interrupted earlier attempt are counted (`unlistedFiles`),
+   since their raw names were not recorded.
 5. On success the bank's HEAD becomes the completed revision; every request of
    the batch gets `commits` (ingest + curate short shas) and `revision`. If the
    Librarian run fails, ingested items are reported `failed` with

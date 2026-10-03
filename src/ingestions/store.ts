@@ -83,6 +83,8 @@ export interface IngestionRecord {
   attempts: number;
   idempotencyKey: string | null;
   metadata: Record<string, unknown> | null;
+  /** Caller hint for the Librarian; absent (not null) when the request had none. */
+  hint?: string;
   items: IngestionItem[];
   /** Bank revision (git commit) the worker produced; null until completed. */
   revision: string | null;
@@ -119,6 +121,8 @@ export interface AcceptInput {
   bank: string;
   items: NewItem[];
   metadata?: Record<string, unknown> | null;
+  /** Caller context for the Librarian. Trimmed; blank means none. */
+  hint?: string | null;
   idempotencyKey?: string | null;
 }
 
@@ -146,6 +150,7 @@ export interface IngestionBatchClaim {
     createdAt: string;
     attempts: number;
     metadata: Record<string, unknown> | null;
+    hint?: string;
     items: ItemDescriptor[];
   }>;
 }
@@ -285,7 +290,8 @@ export class IngestionStore implements IngestionWorkQueue {
     assertBankId(input.bank);
     const bank = input.bank;
     const items = input.items.map((item) => ({ ...item, sha256: item.bytes ? sha256(item.bytes) : null }));
-    const fingerprint = fingerprintOf(input.metadata ?? null, items);
+    const hint = input.hint?.trim() || undefined;
+    const fingerprint = fingerprintOf(input.metadata ?? null, hint, items);
     const key = input.idempotencyKey ?? null;
 
     if (key) {
@@ -310,6 +316,8 @@ export class IngestionStore implements IngestionWorkQueue {
       attempts: 0,
       idempotencyKey: key,
       metadata: input.metadata ?? null,
+      // Omitted when absent, so records without a hint keep their old shape.
+      ...(hint ? { hint } : {}),
       items: items.map((item, index) => ({
         index,
         kind: item.kind,
@@ -486,6 +494,7 @@ export class IngestionStore implements IngestionWorkQueue {
           createdAt: next.createdAt,
           attempts: next.attempts,
           metadata: next.metadata,
+          ...(typeof next.hint === 'string' && next.hint ? { hint: next.hint } : {}),
           items: next.items.map(descriptor),
         });
       }
@@ -733,9 +742,16 @@ function sha256(bytes: Buffer): string {
 }
 
 /** Payload identity for Idempotency-Key: everything the client sent, content by hash. */
-function fingerprintOf(metadata: Record<string, unknown> | null, items: Array<NewItem & { sha256: string | null }>): string {
+// An absent hint is left out (canonicalJson drops undefined), so requests
+// without one keep the fingerprints they had before hints existed.
+function fingerprintOf(
+  metadata: Record<string, unknown> | null,
+  hint: string | undefined,
+  items: Array<NewItem & { sha256: string | null }>,
+): string {
   const canonical = canonicalJson({
     metadata,
+    hint,
     items: items.map((i) => ({
       kind: i.kind,
       sha256: i.sha256,

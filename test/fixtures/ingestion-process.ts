@@ -6,7 +6,7 @@ import { Hono } from 'hono';
 import { BankRegistry, createBanksRouter } from '../../src/banks/index.ts';
 import { IngestionStore, createIngestionsRouter } from '../../src/ingestions/index.ts';
 
-const [action, bank, arg] = process.argv.slice(2);
+const [action, bank, arg, hint] = process.argv.slice(2);
 const registry = new BankRegistry();
 const store = new IngestionStore(registry);
 const app = new Hono();
@@ -26,7 +26,7 @@ async function http(method: string, url: string, body?: unknown, headers: Record
 let out: unknown;
 switch (action) {
   case 'post':
-    out = await http('POST', `/v1/banks/${bank}/ingestions`, { items: [{ type: 'text', text: arg }] }, {
+    out = await http('POST', `/v1/banks/${bank}/ingestions`, { items: [{ type: 'text', text: arg }], ...(hint === undefined ? {} : { hint }) }, {
       'Idempotency-Key': 'restart-key',
     });
     break;
@@ -37,6 +37,11 @@ switch (action) {
   case 'list':
     out = await http('GET', `/v1/banks/${bank}/ingestions`);
     break;
+  case 'claim-hints': {
+    const claim = await store.claimBatch({ bank, workerId: 'child', leaseMs: 60_000 });
+    out = claim?.requests.map((r) => ({ id: r.id, hint: r.hint ?? null })) ?? [];
+    break;
+  }
   case 'drain': {
     const claim = await store.claimBatch({ bank, workerId: 'child', leaseMs: 60_000 });
     if (claim) {

@@ -16,6 +16,7 @@ export interface FakeRequest {
   createdAt: string;
   attempts: number;
   metadata?: Record<string, unknown>;
+  hint?: string;
   items: QueuedItem[];
   bytes: Map<number, Buffer>;
   status: 'queued' | 'running' | 'succeeded' | 'partial' | 'failed';
@@ -41,7 +42,7 @@ export class FakeIngestionStore implements IngestionWorkPort {
   enqueue(
     bank: string,
     items: Array<QueuedItem & { content?: string }>,
-    options: { id?: string; metadata?: Record<string, unknown>; attempts?: number; at?: number } = {},
+    options: { id?: string; metadata?: Record<string, unknown>; hint?: string; attempts?: number; at?: number } = {},
   ): FakeRequest {
     const id = options.id ?? `req-${randomUUID().slice(0, 8)}`;
     const bytes = new Map<number, Buffer>();
@@ -55,6 +56,7 @@ export class FakeIngestionStore implements IngestionWorkPort {
       createdAt: new Date(options.at ?? this.now()).toISOString(),
       attempts: options.attempts ?? 0,
       metadata: options.metadata,
+      ...(options.hint ? { hint: options.hint } : {}),
       items: descriptors,
       bytes,
       status: 'queued',
@@ -98,6 +100,7 @@ export class FakeIngestionStore implements IngestionWorkPort {
         createdAt: r.createdAt,
         attempts: r.attempts,
         metadata: r.metadata,
+        hint: r.hint,
         items: r.items,
       })),
     };

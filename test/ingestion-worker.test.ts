@@ -57,7 +57,6 @@ async function fakeIngest(bank: string, item: any) {
 interface CurateCall {
   bank: string;
   runId: string;
-  hint?: string;
   ctx: any;
   raw: string[];
   release: () => void;
@@ -69,7 +68,7 @@ function makeCurate(opts: { hold?: boolean } = {}) {
   const calls: CurateCall[] = [];
   let active = 0;
   let maxActive = 0;
-  const curate = async (bank: string, runId: string, hint: string | undefined, ctx: any) => {
+  const curate = async (bank: string, runId: string, ctx: any) => {
     active++;
     maxActive = Math.max(maxActive, active);
     try {
@@ -80,7 +79,7 @@ function makeCurate(opts: { hold?: boolean } = {}) {
         release = res;
         fail = rej;
       });
-      calls.push({ bank, runId, hint, ctx, raw, release, fail });
+      calls.push({ bank, runId, ctx, raw, release, fail });
       if (opts.hold) await gate;
       const notes = path.join(root, bank, 'fs', 'notes');
       mkdirSync(notes, { recursive: true });
@@ -380,7 +379,10 @@ test('per-item failure keeps the other items and requests; results carry commits
   assert.match(ingestMsg, /^ingest: 3 item\(s\)/);
   assert.match(ingestMsg, /Ingestion-Item: p1\/2/);
   // The Librarian step gets this batch's origins and ingest commit.
-  assert.equal(calls[0].hint, 'file under notes');
+  // A legacy metadata.hint still reaches the Librarian, tied to its own request's files only.
+  assert.deepEqual(calls[0].ctx.callerHints, [
+    { requestId: 'p1', hint: 'file under notes', rawNames: ['t0.md', 'ok.html'], unlistedFiles: 0 },
+  ]);
   assert.equal(calls[0].ctx.ingestCommit, git(bank, 'rev-parse', '--short', 'HEAD~1'));
   assert.deepEqual(
     calls[0].ctx.provenance.map((e: any) => [e.rawName, e.source.kind, e.source.url ?? e.source.filename]),
@@ -390,6 +392,47 @@ test('per-item failure keeps the other items and requests; results carry commits
       ['doc.bin', 'file', 'doc.bin'],
     ],
   );
+  await worker.stop();
+});
+
+test('batched requests keep their own hints: each tied to its own raw files, top-level hint wins', async () => {
+  const { clock, store, worker, calls } = setup();
+  const bank = await newBank();
+  await worker.start();
+  store.enqueue(bank, [text(0, 'a', 'a1.md'), text(1, 'b', 'a2.md')], {
+    id: 'ha',
+    hint: 'trip receipts for the 2026 tax return',
+    metadata: { hint: 'ignored legacy hint' },
+  });
+  store.enqueue(bank, [text(0, 'c', 'b1.md')], { id: 'hb' });
+  store.enqueue(bank, [text(0, 'd', 'c1.md')], { id: 'hc', hint: 'reading notes, not decisions' });
+  worker.notify(bank);
+  await drain(worker);
+  await clock.advance(MIN);
+  await drain(worker);
+
+  assert.equal(calls.length, 1, 'one Librarian run for the batch');
+  assert.deepEqual(calls[0].ctx.callerHints, [
+    { requestId: 'ha', hint: 'trip receipts for the 2026 tax return', rawNames: ['a1.md', 'a2.md'], unlistedFiles: 0 },
+    { requestId: 'hc', hint: 'reading notes, not decisions', rawNames: ['c1.md'], unlistedFiles: 0 },
+  ]);
+  await worker.stop();
+});
+
+test('restart replay: a hint still covers items ingested by the interrupted attempt', async () => {
+  const { clock, store, worker, calls } = setup();
+  const bank = await newBank();
+  store.enqueue(bank, [text(0, 'first', 'one.md'), text(1, 'second', 'two.md')], { id: 'rh', hint: 'meeting prep' });
+  const dead = await store.claimBatch({ bank, workerId: 'dead', leaseMs: 5 * MIN });
+  await fakeIngest(bank, { kind: 'inline', content: 'first', filename: 'one.md' });
+  await gitCommitAll(path.join(root, bank), `ingest: 1 item(s) into fs/_raw/\n\nIngestion-Batch: ${dead!.token}\nIngestion-Item: rh/0`);
+
+  await worker.start();
+  await clock.advance(10 * MIN);
+  await drain(worker);
+  assert.deepEqual(calls[0].ctx.callerHints, [
+    { requestId: 'rh', hint: 'meeting prep', rawNames: ['two.md'], unlistedFiles: 1 },
+  ]);
   await worker.stop();
 });
 

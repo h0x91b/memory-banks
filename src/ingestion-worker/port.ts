@@ -29,10 +29,12 @@ export interface QueuedRequest {
   /** Claims so far, including the current one. */
   attempts: number;
   /**
-   * Caller metadata. The worker reads `hint` (passed to the Librarian) and
-   * nothing else; provenance is the ingest step's job.
+   * Caller metadata. The worker reads only a legacy string `hint` from it, for
+   * requests that carry no top-level `hint`; provenance is the ingest step's job.
    */
   metadata?: Record<string, unknown> | null;
+  /** Caller context for the Librarian about this request's own items. */
+  hint?: string | null;
   items: QueuedItem[];
 }
 
