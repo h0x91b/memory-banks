@@ -58,6 +58,7 @@ interface CurateCall {
   bank: string;
   runId: string;
   hint?: string;
+  ctx: any;
   raw: string[];
   release: () => void;
   fail: (err: Error) => void;
@@ -68,7 +69,7 @@ function makeCurate(opts: { hold?: boolean } = {}) {
   const calls: CurateCall[] = [];
   let active = 0;
   let maxActive = 0;
-  const curate = async (bank: string, runId: string, hint: string | undefined) => {
+  const curate = async (bank: string, runId: string, hint: string | undefined, ctx: any) => {
     active++;
     maxActive = Math.max(maxActive, active);
     try {
@@ -79,7 +80,7 @@ function makeCurate(opts: { hold?: boolean } = {}) {
         release = res;
         fail = rej;
       });
-      calls.push({ bank, runId, hint, raw, release, fail });
+      calls.push({ bank, runId, hint, ctx, raw, release, fail });
       if (opts.hold) await gate;
       const notes = path.join(root, bank, 'fs', 'notes');
       mkdirSync(notes, { recursive: true });
@@ -269,7 +270,7 @@ test('per-item failure keeps the other items and requests; results carry commits
     url.endsWith('/ok')
       ? new Response('<p>hi</p>', { headers: { 'content-type': 'text/html' } })
       : new Response('nope', { status: 404 });
-  const { clock, store, worker } = setup({ fetch });
+  const { clock, store, worker, calls } = setup({ fetch });
   const bank = await newBank();
   await worker.start();
   store.enqueue(
@@ -313,6 +314,17 @@ test('per-item failure keeps the other items and requests; results carry commits
   const ingestMsg = git(bank, 'log', '-1', '--format=%B', 'HEAD~1');
   assert.match(ingestMsg, /^ingest: 3 item\(s\)/);
   assert.match(ingestMsg, /Ingestion-Item: p1\/2/);
+  // The Librarian step gets this batch's origins and ingest commit.
+  assert.equal(calls[0].hint, 'file under notes');
+  assert.equal(calls[0].ctx.ingestCommit, git(bank, 'rev-parse', '--short', 'HEAD~1'));
+  assert.deepEqual(
+    calls[0].ctx.provenance.map((e: any) => [e.rawName, e.source.kind, e.source.url ?? e.source.filename]),
+    [
+      ['t0.md', 'text', 't0.md'],
+      ['ok.html', 'url', 'https://example.test/ok'],
+      ['doc.bin', 'file', 'doc.bin'],
+    ],
+  );
   await worker.stop();
 });
 

@@ -74,8 +74,21 @@ export interface CurateResult {
   summary?: string;
 }
 
+/** What this batch ingested, for a Librarian briefing that names item origins. */
+export interface CurateContext {
+  /** One entry per item ingested in this attempt (not replayed ones). */
+  provenance: Array<{ rawName: string; source: unknown }>;
+  /** Short sha of this batch's ingest commit, null when nothing new was ingested. */
+  ingestCommit: string | null;
+}
+
 /** Runs the Librarian over whatever sits in the bank's fs/_raw/. */
-export type CurateFn = (bank: string, runId: string, hint: string | undefined) => Promise<CurateResult>;
+export type CurateFn = (
+  bank: string,
+  runId: string,
+  hint: string | undefined,
+  ctx: CurateContext,
+) => Promise<CurateResult>;
 /** Original descriptor of a spooled item, so ingest can record provenance instead of the spool path. */
 export interface IngestOrigin {
   kind: QueuedItem['kind'];
@@ -387,7 +400,7 @@ export class IngestionWorker {
     if (anyIngested && !isLost()) {
       try {
         const hint = live.map((r) => metaString(r, 'hint')?.trim()).filter(Boolean).join('\n\n') || undefined;
-        const res = await this.o.curate(bank, batchId, hint);
+        const res = await this.o.curate(bank, batchId, hint, { provenance: entries, ingestCommit });
         commits.push(...res.commits);
       } catch (err) {
         runError = { code: 'curate_failed', message: errorMessage(err) };
