@@ -42,7 +42,7 @@ export function logLine(tag: string, message: string, color: Color = 'cyan', ban
 /**
  * Convenience: returns a `logLine`-compatible function that always carries the
  * given bank name. Use this inside agent entry points so every call site stays
- * short — `log('curator', '...', 'blue')` instead of repeating the bank
+ * short — `log('librarian', '...', 'blue')` instead of repeating the bank
  * argument.
  */
 export function bankLogger(bank: string): (tag: string, message: string, color?: Color) => void {

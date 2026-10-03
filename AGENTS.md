@@ -2,9 +2,9 @@
 
 Memory-bank agents on top of Flue. Two webhook agents:
 
-- **`curator`** — takes inbox items, lays them out into the right place
-  inside a named memory bank, keeps indexes in sync, and commits every
-  change to the bank's git repo.
+- **`librarian`** (formerly `curator`) — takes inbox items, lays them out
+  into the right place inside a named memory bank, keeps indexes in sync,
+  and commits every change to the bank's git repo.
 - **`retriever`** — answers one question strictly from the contents of a
   bank, with absolute-path citations for every file it used.
 
@@ -53,8 +53,8 @@ and commits via real git from the host side.
    (`foo.md`, `foo-1.md`, ...).
 4. **Commit** the ingest step (`ingest: N item(s) into fs/_raw/`).
 5. **Short-circuit** if `fs/_raw/` is empty (no LLM call, return early).
-6. **Run the curator**: the route sends the briefing to a fresh `Curator`
-   agent instance (`init(Curator).dispatch()` + `read()`). The agent declares
+6. **Run the librarian**: the route sends the briefing to a fresh `Librarian`
+   agent instance (`init(Librarian).dispatch()` + `read()`). The agent declares
    `useSandbox(bash(createBankBashFactory(...)))`, which gives Flue's built-in
    tools (`bash`, `read`, `write`, `edit`, `grep`, `glob`) routed through
    `just-bash` + `ReadWriteFs` rooted at `<bank>/fs/`. The LLM iterates with
@@ -69,11 +69,13 @@ and commits via real git from the host side.
 
 ## Layout (code)
 
-- `.flue/app.ts` — route map: `POST /agents/curator/:id` and
+- `.flue/app.ts` — route map: `POST /agents/librarian/:id` and
   `POST /agents/retriever/:id`, each running one pipeline synchronously.
-- `.flue/agents/curator.ts`, `.flue/agents/retriever.ts` — the `'use agent'`
+  `POST /agents/curator/:id` is a deprecated alias of the librarian route
+  (same handler, one run per request).
+- `.flue/agents/librarian.ts`, `.flue/agents/retriever.ts` — the `'use agent'`
   functions: model, sandbox, role instructions, structured result.
-- `src/curator.ts` — curator pipeline: ingest → agent → sweep → commit → report.
+- `src/librarian.ts` — librarian pipeline: ingest → agent → sweep → commit → report.
 - `src/retriever.ts` — retriever pipeline: validate bank, run a read-only
   agent over `<bank>/fs/`, return `{ answer, references[] }` with absolute paths.
 - `src/structured-result.ts` — `useStructuredResult()` custom hook
@@ -83,7 +85,7 @@ and commits via real git from the host side.
 - `src/request.ts` — request errors, per-request instance ids, `meta` helpers.
 - `src/cli.ts`, `scripts/run-cli.mjs` — run a pipeline from the command line
   against an in-process Flue runtime (no HTTP server).
-- `.flue/roles/curator.md` — curator system prompt.
+- `.flue/roles/librarian.md` — librarian system prompt.
 - `.flue/roles/retriever.md` — retriever system prompt (strict
   no-hallucination rules + absolute-path citation requirement).
 - `src/bank.ts` — bank path resolution (`bankRoot`, `bankPath`,
@@ -106,10 +108,10 @@ through the explicit routes in `.flue/app.ts`.
 
 ## API contract
 
-### Curator
+### Librarian
 
 ```
-POST http://localhost:3583/agents/curator/<run-id>
+POST http://localhost:3583/agents/librarian/<run-id>
 Content-Type: application/json
 
 {
@@ -119,9 +121,14 @@ Content-Type: application/json
     { "kind": "path",   "uri": "file:///Users/me/Downloads/article.html" },
     { "kind": "path",   "uri": "https://example.com/page" }
   ],
-  "hint": "optional free-text hint for the curator"
+  "hint": "optional free-text hint for the librarian"
 }
 ```
+
+> **Deprecated alias.** `POST /agents/curator/<run-id>` still works and runs
+> the exact same librarian pipeline (it is not a second agent). It exists only
+> so clients written before the curator → librarian rename keep working, and
+> will be removed once they have moved to `/agents/librarian/`.
 
 `bank` is required. `items` may be empty (the agent will still process
 whatever is already sitting in `fs/_raw/`, or short-circuit if it's empty).
@@ -165,7 +172,7 @@ Content-Type: application/json
 ```
 
 `bank` and `question` are required. The retriever opens a Flue session over
-`<bank>/fs/` with the same `BashFactory` sandbox the curator uses (it is
+`<bank>/fs/` with the same `BashFactory` sandbox the librarian uses (it is
 read-only by convention — see the role doc — and any unexpected write is
 logged after the run via `git status`).
 
@@ -207,7 +214,7 @@ relevant, the retriever returns `answer` exactly equal to
 
 ```bash
 npm run dev                            # vite dev, port $PORT (default 3583)
-npm run curator -- '{"bank":"demo","items":[{"kind":"inline","content":"hello"}]}'
+npm run librarian -- '{"bank":"demo","items":[{"kind":"inline","content":"hello"}]}'
 npm run retriever -- '{"bank":"demo","question":"..."}'
 npm run build                          # vite build → dist/server.mjs
 npm run start                          # node dist/server.mjs (after build), port from $PORT (default 3000)
@@ -215,7 +222,11 @@ npm run serve                          # build + run production server on fixed 
 npm run typecheck                      # tsc --noEmit
 ```
 
-For local dev hit the agent at `POST http://localhost:3583/agents/curator/<id>`.
+`npm run curator` is a temporary alias of `npm run librarian` (same
+pipeline, prints a deprecation note on stderr); it goes away together with
+the `/agents/curator/` route alias.
+
+For local dev hit the agent at `POST http://localhost:3583/agents/librarian/<id>`.
 For production-style serving (skills, manual testing) use `npm run serve`, then hit `POST http://localhost:47823/agents/<name>/<id>`. The port `47823` is fixed on purpose — skills can hard-code this URL.
 
 ## Configuration
@@ -225,7 +236,8 @@ For production-style serving (skills, manual testing) use `npm run serve`, then 
 - `MEMORY_BANK_ROOT` — optional, root directory for all banks. Defaults to
   `~/.bank-memory`. Supports `~` expansion.
 - `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` — optional, override the git identity
-  used for autocommits. Default: `memory-bank curator <curator@bank-memory.local>`.
+  used for autocommits. Default: `memory-bank librarian <librarian@bank-memory.local>`.
+  Existing bank history keeps the old `memory-bank curator` author.
 
 ## Constraints / non-goals (v1)
 
@@ -244,13 +256,13 @@ For production-style serving (skills, manual testing) use `npm run serve`, then 
   newest release available through the npm mirror used here. Agent code
   imports from `@flue/runtime`; `@flue/sdk` is now only an HTTP client.
 - **Model**: `openrouter/openai/gpt-6-luna` for both agents (`src/model.ts`);
-  reasoning effort is per agent — curator `thinkingLevel: 'xhigh'`, retriever
+  reasoning effort is per agent — librarian `thinkingLevel: 'xhigh'`, retriever
   `'medium'`. The `@earendil-works/pi-ai` 0.83 catalog bundled with
   Flue 2.1.0 predates GPT-6 Luna, so `src/openrouter-provider.ts` re-registers
   the `openrouter` provider with the catalog plus an explicitly declared
   GPT-6 Luna record (reasoning, `xhigh` mapping, pricing copied from pi-ai
   0.87.1). Without it the specifier fails with `Unknown model ID`; with it the
-  request carries `reasoning.effort` (`"xhigh"` for the curator, `"medium"`
+  request carries `reasoning.effort` (`"xhigh"` for the librarian, `"medium"`
   for the retriever). Remove that module once Flue
   ships pi-ai >= 0.87.1 (Flue 2.2.0+).
 - **Agents are conversations**: an agent is a synchronous `'use agent'`
@@ -278,7 +290,7 @@ For production-style serving (skills, manual testing) use `npm run serve`, then 
 - **No `await using` in Node 22**: explicit resource management is not
   available at runtime; call `flue.stop()` in `finally` instead.
 - **just-bash quirk**: between `exec()` calls, cwd / env / functions reset —
-  only the filesystem is shared. The curator role doc reminds the LLM to
+  only the filesystem is shared. The librarian role doc reminds the LLM to
   chain dependent commands with `&&` or use absolute paths.
 
 ## Docs

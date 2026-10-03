@@ -7,10 +7,10 @@ const exec = promisify(execFile);
 
 const COMMIT_ENV: NodeJS.ProcessEnv = {
   ...process.env,
-  GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME ?? 'memory-bank curator',
-  GIT_AUTHOR_EMAIL: process.env.GIT_AUTHOR_EMAIL ?? 'curator@bank-memory.local',
-  GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME ?? 'memory-bank curator',
-  GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL ?? 'curator@bank-memory.local',
+  GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME ?? 'memory-bank librarian',
+  GIT_AUTHOR_EMAIL: process.env.GIT_AUTHOR_EMAIL ?? 'librarian@bank-memory.local',
+  GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME ?? 'memory-bank librarian',
+  GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL ?? 'librarian@bank-memory.local',
 };
 
 export async function gitEnsureRepo(bankPath: string): Promise<void> {

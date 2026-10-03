@@ -3,8 +3,11 @@
  * Run one agent pipeline (ingest/briefing → agent → report) from the command
  * line, without starting the HTTP server:
  *
- *   node scripts/run-cli.mjs curator '{"bank":"demo","items":[...]}'
+ *   node scripts/run-cli.mjs librarian '{"bank":"demo","items":[...]}'
  *   node scripts/run-cli.mjs retriever '{"bank":"demo","question":"..."}'
+ *
+ * `curator` is accepted as a deprecated alias for `librarian` (the agent's
+ * former name) and runs the same single librarian pipeline.
  *
  * The pipeline modules are loaded through Vite's module runner (TypeScript and
  * `.md` role imports work as in the server build) and run against an
@@ -30,9 +33,13 @@ function markdownAsText() {
   };
 }
 
-const [name, rawPayload = '{}', runId = 'cli'] = process.argv.slice(2);
-if (name !== 'curator' && name !== 'retriever') {
-  console.error('usage: run-cli.mjs <curator|retriever> <json-payload> [run-id]');
+const [rawName, rawPayload = '{}', runId = 'cli'] = process.argv.slice(2);
+const name = rawName === 'curator' ? 'librarian' : rawName;
+if (rawName === 'curator') {
+  console.error('note: "curator" is a deprecated alias for "librarian"');
+}
+if (name !== 'librarian' && name !== 'retriever') {
+  console.error('usage: run-cli.mjs <librarian|retriever> <json-payload> [run-id]');
   process.exit(2);
 }
 

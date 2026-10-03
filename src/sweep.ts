@@ -10,7 +10,7 @@ export interface SweptItem {
 
 /**
  * Move anything left in <fsPath>/_raw/ into <fsPath>/_unsorted/ as a safety net
- * so the inbox is guaranteed empty after a curator run. Handles both files and
+ * so the inbox is guaranteed empty after a librarian run. Handles both files and
  * directories — a directory is moved as a single unit, keeping its internal
  * structure intact.
  */

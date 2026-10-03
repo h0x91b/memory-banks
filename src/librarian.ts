@@ -11,15 +11,15 @@ import { collectIndexes } from './index-scan.js';
 import { MODEL } from './model.js';
 import { MODEL_ID, RequestError, costMeta, freshInstanceId, tokensMeta } from './request.js';
 import { readStructuredReply } from './structured-result.js';
-import { Curator, CuratorResultSchema } from '../.flue/agents/curator.js';
+import { Librarian, LibrarianResultSchema } from '../.flue/agents/librarian.js';
 
-export interface CuratorPayload {
+export interface LibrarianPayload {
   bank?: string;
   items?: IngestItem[];
   hint?: string;
 }
 
-export async function runCurator(payload: CuratorPayload | undefined, runId: string) {
+export async function runLibrarian(payload: LibrarianPayload | undefined, runId: string) {
   const bank = payload?.bank?.trim();
   if (!bank) throw new RequestError('payload.bank is required');
   if (!BANK_NAME_RE.test(bank)) {
@@ -31,15 +31,15 @@ export async function runCurator(payload: CuratorPayload | undefined, runId: str
   const ms = (since: number) => `${Date.now() - since}ms`;
 
   const banklog = bankLogger(bank);
-  banklog('curator', `=== START items=${items.length}${payload?.hint ? ` hint="${payload.hint.slice(0, 80)}"` : ''}`, 'magenta');
+  banklog('librarian', `=== START items=${items.length}${payload?.hint ? ` hint="${payload.hint.slice(0, 80)}"` : ''}`, 'magenta');
 
   const { created, repoPath, fsPath } = await ensureBank(bank);
   await gitEnsureRepo(repoPath);
-  banklog('curator', `bank ${created ? 'CREATED' : 'ready'} at ${fsPath}`, 'blue');
+  banklog('librarian', `bank ${created ? 'CREATED' : 'ready'} at ${fsPath}`, 'blue');
 
   const ingested: string[] = [];
   if (items.length > 0) {
-    banklog('curator', `ingest ${items.length} item(s) → fs/_raw/`, 'blue');
+    banklog('librarian', `ingest ${items.length} item(s) → fs/_raw/`, 'blue');
     for (let i = 0; i < items.length; i++) {
       const res = await ingestOne(bank, items[i]);
       ingested.push(res.sourceLabel);
@@ -57,10 +57,10 @@ export async function runCurator(payload: CuratorPayload | undefined, runId: str
   await cleanMacJunk(rawDirAbs);
   const rawEntries = await listTopLevelEntries(rawDirAbs);
   const rawFileCount = await countFilesRecursively(rawDirAbs);
-  banklog('curator', `_raw/ has ${rawEntries.length} top-level entr${rawEntries.length === 1 ? 'y' : 'ies'} (${rawFileCount} files total)`, 'blue');
+  banklog('librarian', `_raw/ has ${rawEntries.length} top-level entr${rawEntries.length === 1 ? 'y' : 'ies'} (${rawFileCount} files total)`, 'blue');
 
   if (rawEntries.length === 0) {
-    banklog('curator', `=== DONE _raw/ empty, nothing to curate (took ${ms(t0)})`, 'magenta');
+    banklog('librarian', `=== DONE _raw/ empty, nothing to curate (took ${ms(t0)})`, 'magenta');
     return {
       bank,
       processed: [],
@@ -70,27 +70,27 @@ export async function runCurator(payload: CuratorPayload | undefined, runId: str
     };
   }
 
-  banklog('curator', `LLM init: ${MODEL}`, 'blue');
+  banklog('librarian', `LLM init: ${MODEL}`, 'blue');
   const indexToc = await collectIndexes(fsPath, { linesPerFile: 30 });
   if (indexToc) {
-    banklog('curator', `pre-injected ${indexToc.split('\n### ').length} _index.md file(s) into briefing`, 'blue');
+    banklog('librarian', `pre-injected ${indexToc.split('\n### ').length} _index.md file(s) into briefing`, 'blue');
   }
   const briefing = buildBriefing(bank, rawEntries, rawFileCount, payload?.hint, indexToc);
-  banklog('curator', `LLM call (prompt=${briefing.length}B, raw_entries=${rawEntries.length}, raw_files=${rawFileCount})`, 'blue');
+  banklog('librarian', `LLM call (prompt=${briefing.length}B, raw_entries=${rawEntries.length}, raw_files=${rawFileCount})`, 'blue');
   const tLlm = Date.now();
-  const agent = init(Curator, { id: freshInstanceId('curator', runId) });
+  const agent = init(Librarian, { id: freshInstanceId('librarian', runId) });
   const receipt = await agent.dispatch({
     message: { kind: 'user', body: briefing },
     initialData: { bank, fsPath },
   });
-  const { data, usage, toolCalls } = readStructuredReply(await agent.read(receipt), CuratorResultSchema);
+  const { data, usage, toolCalls } = readStructuredReply(await agent.read(receipt), LibrarianResultSchema);
   const bashCalls = toolCalls.filter((tool) => tool === 'bash').length;
   banklog(
-    'curator',
+    'librarian',
     `LLM done in ${ms(tLlm)} — tokens=${usage?.totalTokens ?? '?'} cost=$${usage ? usage.cost.total.toFixed(5) : '?'} bashCalls=${bashCalls}`,
     'blue',
   );
-  banklog('curator', `summary: ${data.summary}`, 'blue');
+  banklog('librarian', `summary: ${data.summary}`, 'blue');
 
   const swept = await sweepRawToUnsorted(fsPath);
   if (swept.length) {
@@ -109,7 +109,7 @@ export async function runCurator(payload: CuratorPayload | undefined, runId: str
   }
 
   banklog(
-    'curator',
+    'librarian',
     `=== DONE processed=${processed.length} skipped=${skipped.length} swept=${swept.length} bashCalls=${bashCalls} (took ${ms(t0)})`,
     'magenta',
   );
