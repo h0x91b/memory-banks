@@ -234,16 +234,32 @@ is not processing it.
   comparisons, trade-offs, questions and answers, caveats, dates, names. A note
   that only says what the topic is "about" has lost the knowledge. Shorten
   wording, not facts.
-- **Language.** Write notes in the source's main language: a Russian cheat
-  sheet gives Russian notes. English technical terms, code and names inside
-  such text (SFT, LoRA, `beta`) do not make it a "multilingual mix"; keep them
-  as they are. Structure with headings, lists and tables.
+- **Language.** Notes synthesized from source material may be written in
+  English or in the source's language, whichever keeps the knowledge
+  clearest; English is fine and usually cheaper. Keep one language within a
+  note, keep original terms, names and quotes as they are, and keep the
+  source-language words people would search for in the manifest keywords.
+  User notes that are filed or rewritten still follow the language rules
+  below.
+- **No navigation notes.** Do not write `README`, "reading map", "content
+  map" or index-style notes that only list other notes: the root map already
+  does that. A glossary note is fine when the source itself has a glossary;
+  then it carries the source's definitions, not links.
 - **Provenance.** End each note with a line
   `Source: <original filename(s)>, ingest commit <sha>` using the names in
   `_raw/` and the ingest commit from the briefing when it is given. Never copy
   URLs or other host provenance values into a note.
 - **Manifests** for notes follow the normal rules; the glossary still takes
   only terms the source itself defines.
+
+### Check coverage before you submit
+
+A source with an explicit structure (sections, a glossary, a Q&A list, a
+data array) is your checklist. List its sections and items with `grep -n`
+and confirm each one landed in a note: every glossary term defined, every
+question's answer kept, every table's numbers. Anything you leave out must
+be a deliberate choice (duplicate, pure UI text, a value with no meaning
+outside the page), never an oversight.
 
 ### Originals
 
