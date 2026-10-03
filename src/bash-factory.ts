@@ -1,5 +1,5 @@
 import { Bash, ReadWriteFs } from 'just-bash';
-import type { BashFactory, BashLike } from '@flue/sdk';
+import type { BashFactory, BashLike } from '@flue/runtime';
 import type { FlueLogger } from './log-types.js';
 import { logLine, preview } from './console-log.js';
 
@@ -35,19 +35,20 @@ export interface BashFactoryDeps {
   /** Bank name — used to prefix stderr log lines so multi-bank runs are distinguishable. */
   bank: string;
   bankFsPath: string;
-  log: FlueLogger;
+  /** Optional structured logger; every call is mirrored to stderr regardless. */
+  log?: FlueLogger;
   onExec?: (command: string, result: { stdout: string; stderr: string; exitCode: number; tookMs: number }) => void;
 }
 
 /**
- * Plug just-bash into Flue's `init({ sandbox })` so the agent's built-in
+ * Plug just-bash into Flue's `useSandbox(bash(factory))` so the agent's built-in
  * `bash`, `read`, `write`, `edit`, `grep`, `glob` tools all route through a
  * sandbox rooted at <bank-name>/fs/. The .git directory sits at
  * <bank-name>/.git, one level outside this sandbox, so the agent has no
  * way to touch it.
  *
  * Every tool call is mirrored to stderr via `logLine` so the dev server pane
- * shows live agent activity. Flue's `log.info()` goes to its event stream
+ * shows live agent activity. Flue's own logging goes to its event stream
  * (not stdout), so without the stderr mirror you'd see nothing.
  */
 export function createBankBashFactory({ bank, bankFsPath, log, onExec }: BashFactoryDeps): BashFactory {
@@ -71,7 +72,7 @@ export function createBankBashFactory({ bank, bankFsPath, log, onExec }: BashFac
         const upgraded = maybeUpgradeGrep(command);
         const effective = upgraded !== command ? upgraded : command;
         const script = preview(effective);
-        log.info('bash.call', { index: idx, script, upgraded: upgraded !== command });
+        log?.info('bash.call', { index: idx, script, upgraded: upgraded !== command });
         if (upgraded !== command) {
           logLine('bash.fix', `#${idx} grep -> grep -E (alternation detected)`, 'yellow', bank);
         }
@@ -86,7 +87,7 @@ export function createBankBashFactory({ bank, bankFsPath, log, onExec }: BashFac
         const exit = result.exitCode ?? 0;
         const stdout = result.stdout ?? '';
         const stderr = result.stderr ?? '';
-        log.info('bash.result', {
+        log?.info('bash.result', {
           index: idx,
           exit,
           stdout_bytes: stdout.length,

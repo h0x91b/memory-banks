@@ -4,21 +4,25 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "./scripts/flue-run.sh dev --target node --env .env --port ${PORT:-3583}",
-    "curator": "./scripts/flue-run.sh run curator --target node --id test-1 --env .env --payload",
-    "retriever": "./scripts/flue-run.sh run retriever --target node --id test-1 --env .env --payload",
-    "build": "flue build --target node",
-    "start": "node dist/server.mjs",
-    "serve": "npm run build && PORT=47823 node dist/server.mjs",
+    "dev": "./scripts/with-env.sh vite dev --port ${PORT:-3583}",
+    "curator": "./scripts/with-env.sh node scripts/run-cli.mjs curator",
+    "retriever": "./scripts/with-env.sh node scripts/run-cli.mjs retriever",
+    "build": "vite build",
+    "start": "./scripts/with-env.sh node dist/server.mjs",
+    "serve": "npm run build && PORT=47823 ./scripts/with-env.sh node dist/server.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@flue/sdk": "latest",
+    "@earendil-works/pi-ai": "0.83.0",
+    "@flue/runtime": "2.1.0",
+    "@flue/vite": "2.1.0",
+    "hono": "4.12.32",
     "just-bash": "^3.0.0",
-    "valibot": "latest"
+    "valibot": "^1.5.0"
   },
   "devDependencies": {
-    "@flue/cli": "latest",
-    "typescript": "^5.6.0"
+    "@flue/cli": "2.1.0",
+    "typescript": "^5.6.0",
+    "vite": "^8.3.0"
   }
 }

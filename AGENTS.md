@@ -53,11 +53,13 @@ and commits via real git from the host side.
    (`foo.md`, `foo-1.md`, ...).
 4. **Commit** the ingest step (`ingest: N item(s) into fs/_raw/`).
 5. **Short-circuit** if `fs/_raw/` is empty (no LLM call, return early).
-6. **Run the curator**: `init({ sandbox: createBankBashFactory(fsPath), ... })`
-   gives Flue's built-in tools (`bash`, `read`, `write`, `edit`, `grep`,
-   `glob`) but routed through `just-bash` + `ReadWriteFs` rooted at
-   `<bank>/fs/`. The LLM iterates with those tools, then returns a structured
-   `{ summary: string }`.
+6. **Run the curator**: the route sends the briefing to a fresh `Curator`
+   agent instance (`init(Curator).dispatch()` + `read()`). The agent declares
+   `useSandbox(bash(createBankBashFactory(...)))`, which gives Flue's built-in
+   tools (`bash`, `read`, `write`, `edit`, `grep`, `glob`) routed through
+   `just-bash` + `ReadWriteFs` rooted at `<bank>/fs/`. The LLM iterates with
+   those tools, then delivers `{ summary: string }` by calling the
+   `submit_result` tool.
 7. **Sweep** anything still left in `fs/_raw/` into `fs/_unsorted/` (safety
    net so `_raw/` is guaranteed empty after a run).
 8. **Diff** via `git status --porcelain -z -uall` (paths get stripped of the
@@ -67,11 +69,20 @@ and commits via real git from the host side.
 
 ## Layout (code)
 
-- `.flue/agents/curator.ts` — curator entry point: orchestrates ingest →
-  sandbox → sweep → commit → report.
-- `.flue/agents/retriever.ts` — retriever entry point: validates bank,
-  runs a read-only Flue session over `<bank>/fs/`, returns
-  `{ answer, references[] }` with absolute paths.
+- `.flue/app.ts` — route map: `POST /agents/curator/:id` and
+  `POST /agents/retriever/:id`, each running one pipeline synchronously.
+- `.flue/agents/curator.ts`, `.flue/agents/retriever.ts` — the `'use agent'`
+  functions: model, sandbox, role instructions, structured result.
+- `src/curator.ts` — curator pipeline: ingest → agent → sweep → commit → report.
+- `src/retriever.ts` — retriever pipeline: validate bank, run a read-only
+  agent over `<bank>/fs/`, return `{ answer, references[] }` with absolute paths.
+- `src/structured-result.ts` — `useStructuredResult()` custom hook
+  (`submit_result` tool + data part + finish enforcement + usage metadata)
+  and `readStructuredReply()` for the route side.
+- `src/model.ts` — model and reasoning effort shared by both agents.
+- `src/request.ts` — request errors, per-request instance ids, `meta` helpers.
+- `src/cli.ts`, `scripts/run-cli.mjs` — run a pipeline from the command line
+  against an in-process Flue runtime (no HTTP server).
 - `.flue/roles/curator.md` — curator system prompt.
 - `.flue/roles/retriever.md` — retriever system prompt (strict
   no-hallucination rules + absolute-path citation requirement).
@@ -86,11 +97,12 @@ and commits via real git from the host side.
 - `src/sweep.ts` — move leftover `fs/_raw/` files into `fs/_unsorted/`.
 - `src/log-types.ts` — minimal `FlueLogger` interface for util modules
   that don't want to import the whole SDK type bundle.
-- `scripts/flue-run.sh` — wrapper that falls back to `$OPENROUTER_FLUE` if
-  `.env` lacks `OPENROUTER_API_KEY`.
+- `scripts/with-env.sh` — loads `.env` and falls back to `$OPENROUTER_FLUE`
+  if no `OPENROUTER_API_KEY` is set, then runs the given command.
 
-Flue auto-discovers `.flue/agents/*.ts` and `.flue/roles/*.md`. Adding a new
-agent file is enough — no registration.
+`.flue/` is Flue's source directory: `app.ts` and the `'use agent'` scan are
+resolved from it. Agents are registered by the directive, but served only
+through the explicit routes in `.flue/app.ts`.
 
 ## API contract
 
@@ -194,9 +206,10 @@ relevant, the retriever returns `answer` exactly equal to
 ## Commands
 
 ```bash
-npm run dev                            # flue dev --target node, port 3583
+npm run dev                            # vite dev, port $PORT (default 3583)
 npm run curator -- '{"bank":"demo","items":[{"kind":"inline","content":"hello"}]}'
-npm run build                          # production bundle to dist/
+npm run retriever -- '{"bank":"demo","question":"..."}'
+npm run build                          # vite build → dist/server.mjs
 npm run start                          # node dist/server.mjs (after build), port from $PORT (default 3000)
 npm run serve                          # build + run production server on fixed port 47823 (stable URL for skills)
 npm run typecheck                      # tsc --noEmit
@@ -227,27 +240,41 @@ For production-style serving (skills, manual testing) use `npm run serve`, then 
 
 ## Key facts about Flue (learned the hard way)
 
-- **Package name**: SDK is `@flue/sdk`. Import types from `'@flue/sdk'`.
-- **Model**: `openrouter/deepseek/deepseek-v4-flash`. Model registry at
-  https://flueframework.com/models.json.
+- **Version**: Flue 2.1.0 (`@flue/runtime`, `@flue/vite`, `@flue/cli`), the
+  newest release available through the npm mirror used here. Agent code
+  imports from `@flue/runtime`; `@flue/sdk` is now only an HTTP client.
+- **Model**: `openrouter/openai/gpt-6-luna` with `thinkingLevel: 'xhigh'`
+  (`src/model.ts`). The `@earendil-works/pi-ai` 0.83 catalog bundled with
+  Flue 2.1.0 predates GPT-6 Luna, so `src/openrouter-provider.ts` re-registers
+  the `openrouter` provider with the catalog plus an explicitly declared
+  GPT-6 Luna record (reasoning, `xhigh` mapping, pricing copied from pi-ai
+  0.87.1). Without it the specifier fails with `Unknown model ID`; with it the
+  request carries `reasoning.effort: "xhigh"`. Remove that module once Flue
+  ships pi-ai >= 0.87.1 (Flue 2.2.0+).
+- **Agents are conversations**: an agent is a synchronous `'use agent'`
+  function using hooks; work is sent with `init(Agent, { id }).dispatch()`
+  and the reply read with `read()`. Instances persist by id, so every request
+  uses a fresh id (`freshInstanceId`) to avoid carrying history between runs.
+- **Structured output**: `useStructuredResult(schema)` adds a `submit_result`
+  tool whose arguments are validated by the schema and written to the
+  `result` data part (`reply.data.result`). Usage arrives as response
+  metadata (`reply.metadata.usage`).
 - **Custom tool names cannot conflict with built-ins** (`read`, `write`,
-  `edit`, `bash`, `grep`, `glob`, `task`). Use `sandbox: BashFactory` to
+  `edit`, `bash`, `grep`, `glob`, `task`). Use `useSandbox(bash(factory))` to
   route the built-ins through your own runtime instead of adding a custom
   tool — that's exactly what `src/bash-factory.ts` does.
-- **`init({ sandbox })` accepts a `BashFactory`** of shape `() => BashLike`.
+- **`bash(factory)` accepts a `BashFactory`** of shape `() => BashLike`.
   `BashLike` has `exec`, `getCwd`, and an `fs` surface with read/write/stat/
   readdir/mkdir/rm/etc. We wrap `just-bash`'s `Bash` + `ReadWriteFs` into
-  this shape.
-- **NovitaAI routing**: OpenRouter's provider routing is set via the
-  request-body `provider` field. Flue's `configureProvider()` only exposes
-  `baseUrl/headers/apiKey`, so pin Novita via provider preferences on the
-  OpenRouter model page.
-- **Cost/usage**: `session.prompt()` returns `{ data, usage, model }`. `usage`
-  includes `input/output/cacheRead/cacheWrite/totalTokens` plus
-  `cost.{input,output,cacheRead,cacheWrite,total}` in USD.
-- **API key fallback**: `npm run dev` / `npm run curator` go through
-  `scripts/flue-run.sh`, which exports `OPENROUTER_API_KEY=$OPENROUTER_FLUE`
-  only if `.env` doesn't already define the key.
+  this shape. Without `useSandbox()` an agent has no file tools at all.
+- **Cost/usage**: `usage` includes `input/output/cacheRead/cacheWrite/totalTokens`
+  plus `cost.{input,output,cacheRead,cacheWrite,total}` in USD, computed from
+  the catalog rates of the model.
+- **API key fallback**: npm scripts go through `scripts/with-env.sh`, which
+  exports `OPENROUTER_API_KEY=$OPENROUTER_FLUE` only if neither the shell nor
+  `.env` defines the key. Built servers never load `.env` themselves.
+- **No `await using` in Node 22**: explicit resource management is not
+  available at runtime; call `flue.stop()` in `finally` instead.
 - **just-bash quirk**: between `exec()` calls, cwd / env / functions reset —
   only the filesystem is shared. The curator role doc reminds the LLM to
   chain dependent commands with `&&` or use absolute paths.
@@ -256,6 +283,6 @@ For production-style serving (skills, manual testing) use `npm run serve`, then 
 
 - Homepage: https://flueframework.com/
 - README (main): https://github.com/withastro/flue/blob/main/README.md
-- Node.js deploy guide: https://github.com/withastro/flue/blob/main/docs/deploy-node.md
-- Models list: https://flueframework.com/models.json
+- Bundled docs for the installed version: `npx flue docs` / `node_modules/@flue/runtime/docs/`
+- Migration guide (1.0-beta → 2): https://flueframework.com/docs/guide/migration/
 - just-bash: https://github.com/vercel-labs/just-bash
