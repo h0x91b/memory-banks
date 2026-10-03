@@ -31,3 +31,6 @@ Thumbs.db
 # Tooling local overrides
 .claude/settings.local.json
 .dev3/config.local.json
+
+# npm lockfile is not tracked
+package-lock.json
