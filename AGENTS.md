@@ -89,7 +89,11 @@ and commits via real git from the host side.
   accepts text/URL/file intake durably with `202` and status/history GETs
   (`src/ingestions/`, contract in `docs/api/ingestions.md`); queued requests
   live in `<MEMORY_BANK_ROOT>/.ingestion/` and hold archiving through durable
-  holds. No worker processes them yet.
+  holds. The ingestion worker (`src/ingestion-worker/`, started with the
+  server, `docs/design/ingestion-worker.md`) batches them per bank into one
+  Librarian run. `POST /v1/banks/:bank/query` answers from a read-only
+  snapshot of the last completed revision (`src/query/`,
+  `docs/api/query.md`). Whole workflow in order: `docs/api/README.md`.
 - `src/spend-ledger.ts` — append-only spend/HTTP journal at
   `<MEMORY_BANK_ROOT>/.accounting/ledger.jsonl`, idempotent per execution id;
   `recordAgentCall` wraps each pipeline's agent call. Costs are estimates from

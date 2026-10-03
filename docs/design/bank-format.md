@@ -1,8 +1,9 @@
 # Bank format contract (v1)
 
-Status: **contract v1, final for implementation; not implemented.** This document fixes the on-disk format of a memory bank so that the
-validator, the briefing/glossary generator and the curator/retriever prompts can be built independently and agree
-with each other. Nothing in `src/` or `.flue/` follows it yet.
+Status: **contract v1, implemented.** This document fixes the on-disk format of a memory bank. It is followed by
+the format library (`src/bank-format/`), the validator (`src/bank-validator/`), the briefing and glossary generator
+(`src/bank-briefing/`), the bank scaffold (`src/bank.ts`), the Librarian's `submit_result` gate
+(`src/librarian-gate.ts`, §9) and the Librarian/retriever roles (`.flue/roles/`). Existing banks are not migrated.
 
 Every rule carries its provenance:
 
@@ -273,9 +274,8 @@ Exactly one line per existing folder at every depth (inboxes excluded), and no l
 | Wrong order | `map-order` (warning) |
 | File over `MAP_MAX` | `map-size` (warning) |
 
-A bank with no folders is valid with an empty `## Folders` section. Note: the current scaffold
-(`src/bank.ts:52`) writes no `## Folders` line, so a brand-new bank is not yet valid; fixing the scaffold belongs to
-the implementation tasks.
+A bank with no folders is valid with an empty `## Folders` section; the scaffold (`src/bank.ts`) writes exactly
+that, so a brand-new bank is valid.
 
 ### 5.3 Open questions file: `/_open-questions.md` **[COORDINATOR]**
 

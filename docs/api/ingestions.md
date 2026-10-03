@@ -193,7 +193,7 @@ holds). `recoverAll()` repairs every bank and is meant for server startup. It fi
 | Hold whose request does not exist (crash between hold and rename) | Released — an orphan hold never blocks archive forever |
 | Committed request without its idempotency record | Record re-written, so a retry still replays |
 
-## Worker port (no worker ships in this module)
+## Worker port (used by `src/ingestion-worker/`)
 
 `IngestionStore` implements `IngestionWorkQueue` (`src/ingestions/store.ts`):
 
