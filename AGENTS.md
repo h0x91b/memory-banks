@@ -193,10 +193,32 @@ returns the "no data" response without calling the LLM.
     "tokens": { ... },
     "cost": { ... },
     "bash_calls": 6,
-    "unexpected_writes": 0
+    "unexpected_writes": 0,
+    "telemetry": {
+      "source": "flue-observe",
+      "complete": true,
+      "briefing_bytes": 5120,
+      "tool_calls": { "read": 3, "grep": 0, "glob": 0, "bash": 6, "other": 0 },
+      "read_paths": ["/ars/v5/_index.md", "/ars/v5/r2-report.md", "/ars/v5/_index.md"],
+      "bash_heuristic": { "search": 4, "read": 1, "list": 1, "unclassified": 0 },
+      "operations": [{ "tool": "bash", "kinds": ["search"] }, { "tool": "read", "path": "/ars/v5/_index.md" }],
+      "truncated": false
+    }
   }
 }
 ```
+
+`meta.telemetry` (null when the bank is missing) is measurement only — see
+`src/retriever-telemetry.ts`. It comes from Flue's `observe()` `tool_start`
+events for this agent instance, so `tool_calls` and the ordered `read_paths`
+(sandbox paths given to the `read` tool, repeats kept) are exact.
+`complete: false` means the observed starts did not match Flue's recorded tool
+calls; treat the numbers as a lower bound. `bash` is opaque: a bash call is
+only classified by its command words (`rg`/`grep` → search, `cat`/`head`/`sed`
+→ read, `ls`/`find` → list) in `bash_heuristic`, and files it touches never
+appear in `read_paths`. No file contents, search patterns or command text are
+recorded; the stderr log gets a one-line summary plus the read order.
+`operations` and `read_paths` are capped at 200 entries (`truncated`).
 
 `references[].path` is always an **absolute filesystem path** on the host —
 the caller can `cat` / `read` it directly. If the bank contains nothing
