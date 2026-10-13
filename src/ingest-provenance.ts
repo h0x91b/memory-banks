@@ -149,7 +149,7 @@ export function formatProvenanceForBriefing(entries: IngestProvenance[], ingestC
   const where = ingestCommit ? `ingest commit \`${ingestCommit}\`` : 'the ingest commit';
   const lines = [
     '## Source provenance (host-recorded)',
-    `Where the files ingested in this run came from. Already recorded in ${where}; read-only facts for your decisions — do not copy them into bank files. Files in \`_raw/\` not listed here have unknown source.`,
+    `Where the files ingested in this run came from. Already recorded in ${where}; read-only facts for your decisions. A note may cite its source as the original filename plus this ingest commit; never copy the URIs or other values below into bank files. Files in \`_raw/\` not listed here have unknown source.`,
     '',
     ...entries.map((p) => `- \`_raw/${p.rawName}\` <- ${provenanceRecord(p)}`),
   ];

@@ -10,5 +10,5 @@ import './openrouter-provider.js';
 export const MODEL = 'openrouter/openai/gpt-6-luna';
 
 /** Reasoning effort per agent: the librarian rewrites the bank, the retriever only reads it. */
-export const LIBRARIAN_THINKING_LEVEL: ThinkingLevel = 'xhigh';
+export const LIBRARIAN_THINKING_LEVEL: ThinkingLevel = 'high';
 export const RETRIEVER_THINKING_LEVEL: ThinkingLevel = 'medium';

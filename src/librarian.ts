@@ -13,7 +13,7 @@ import { formatCallerHintsForBriefing, type BriefingCallerHint } from './caller-
 import { gitCommitAll, gitEnsureRepo } from './git.js';
 import { readGitChanges, type Change } from './changes.js';
 import { sweepRawToUnsorted } from './sweep.js';
-import { bankLogger } from './console-log.js';
+import { bankLogger, formatDuration } from './console-log.js';
 import { buildBankBriefing, summarizeBriefing } from './bank-briefing/index.ts';
 import { MODEL } from './model.js';
 import { MODEL_ID, RequestError, costMeta, freshInstanceId, tokensMeta } from './request.js';
@@ -60,7 +60,7 @@ export async function runLibrarian(
 
   const items = Array.isArray(payload?.items) ? payload!.items! : [];
   const t0 = Date.now();
-  const ms = (since: number) => `${Date.now() - since}ms`;
+  const ms = (since: number) => formatDuration(Date.now() - since);
 
   const banklog = bankLogger(bank);
   banklog('librarian', `=== START items=${items.length}${payload?.hint ? ` hint="${payload.hint.slice(0, 80)}"` : ''}`, 'magenta');
@@ -144,15 +144,23 @@ export async function runLibrarian(
         return readStructuredReply(await agent.read(receipt), LibrarianResultSchema);
       },
     );
+  } catch (err) {
+    banklog(
+      'librarian',
+      `=== FAILED after ${ms(t0)} (LLM ${ms(tLlm)}): ${err instanceof Error ? err.message.slice(0, 200) : String(err)}`,
+      'red',
+    );
+    throw err;
   } finally {
     releaseGate(instanceId);
   }
+  const llmMs = Date.now() - tLlm;
   const { data, usage, toolCalls } = reply;
   const gate = submitGate.outcome();
   const bashCalls = toolCalls.filter((tool) => tool === 'bash').length;
   banklog(
     'librarian',
-    `LLM done in ${ms(tLlm)} — tokens=${usage?.totalTokens ?? '?'} cost=$${usage ? usage.cost.total.toFixed(5) : '?'} bashCalls=${bashCalls}`,
+    `LLM done in ${formatDuration(llmMs)} — tokens=${usage?.totalTokens ?? '?'} cost=$${usage ? usage.cost.total.toFixed(5) : '?'} bashCalls=${bashCalls}`,
     'blue',
   );
   banklog('librarian', `summary: ${data.summary}`, 'blue');
@@ -177,7 +185,7 @@ export async function runLibrarian(
 
   banklog(
     'librarian',
-    `=== DONE processed=${processed.length} skipped=${skipped.length} swept=${swept.length} bashCalls=${bashCalls} (took ${ms(t0)})`,
+    `=== DONE in ${ms(t0)} (prep ${formatDuration(tLlm - t0)}, LLM ${formatDuration(llmMs)}, finish ${ms(tLlm + llmMs)}) processed=${processed.length} skipped=${skipped.length} swept=${swept.length} bashCalls=${bashCalls}`,
     'magenta',
   );
 
@@ -374,7 +382,7 @@ function buildBriefing(
   );
   parts.push('');
   parts.push(
-    'Use the map above to plan placements directly. Read the items in `_raw/` to understand what you\'re filing, move them into the right folders, write a `.manifest.json` for every content file you place, and update the root `/_index.md` for every folder you create, move or remove. `submit_result` validates the bank: fix any new violations it reports and submit again.',
+    'Use the map above to plan placements directly. Read every item in `_raw/` in full and classify it: notes are filed, rewritten or merged; source material (HTML pages, web bundles, text data in JS/JSON, long exports) is turned into grounded topic notes in Markdown, merged into existing notes where they cover the topic; shell assets (CSS, UI JavaScript, icons, fonts) are not bank content. Moving originals with manifests is not knowledge. Write a `.manifest.json` for every content file you place or write, and update the root `/_index.md` for every folder you create, move or remove. `submit_result` validates the bank: fix any new violations it reports and submit again.',
   );
   return parts.join('\n');
 }
